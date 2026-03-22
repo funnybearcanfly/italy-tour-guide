@@ -523,48 +523,46 @@ body.reading-mode .day-navigation {
 .day-map-container {
     position: relative;
     width: 100%;
-    height: 300px;
+    height: 350px;
     border-radius: 10px;
     overflow: hidden;
     background: var(--bg-secondary);
-}
-
-.day-map-container iframe {
-    width: 100%;
-    height: 100%;
-    border: none;
+    border: 1px solid var(--border-color);
 }
 
 .map-locations-list {
     margin-top: 1rem;
+    max-height: 200px;
+    overflow-y: auto;
 }
 
 .map-location-item {
     display: flex;
     align-items: center;
-    padding: 0.75rem;
-    margin-bottom: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    margin-bottom: 0.4rem;
     background: var(--bg-secondary);
     border-radius: 8px;
+    border-left: 3px solid transparent;
     transition: all 0.3s ease;
     cursor: pointer;
 }
 
 .map-location-item:hover {
     background: var(--accent-light);
-    transform: translateX(5px);
+    border-left-color: var(--accent-primary);
 }
 
 .map-location-item .number {
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     background: var(--accent-primary);
     color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 600;
     margin-right: 0.75rem;
     flex-shrink: 0;
@@ -573,16 +571,18 @@ body.reading-mode .day-navigation {
 .map-location-item .name {
     flex: 1;
     font-weight: 500;
+    font-size: 0.9rem;
 }
 
 .map-location-item .view-map-btn {
-    padding: 0.25rem 0.75rem;
-    font-size: 0.8rem;
-    background: var(--accent-light);
+    padding: 0.2rem 0.6rem;
+    font-size: 0.75rem;
+    background: transparent;
     color: var(--accent-primary);
     border: 1px solid var(--accent-primary);
-    border-radius: 20px;
+    border-radius: 15px;
     transition: all 0.3s ease;
+    text-decoration: none;
 }
 
 .map-location-item .view-map-btn:hover {
@@ -684,26 +684,23 @@ body.reading-mode .day-navigation {
 <!-- Content -->
 <section class="day-content" id="content">
     <div class="container">
+        <!-- 隐藏的景点数据 -->
+        <script id="locations-data" type="application/json">{{ locations | tojson }}</script>
+
         <!-- Day Map Section -->
         {% if locations and locations|length > 0 %}
         <div class="day-map-section">
-            <h5><i class="bi bi-map me-2"></i>今日景点地图</h5>
+            <h5><i class="bi bi-map me-2"></i>今日景点地图（共{{ locations|length }}个景点）</h5>
             <div class="day-map-container" id="dayMapContainer">
-                <iframe
-                    id="dayMapFrame"
-                    loading="lazy"
-                    allowfullscreen
-                    referrerpolicy="no-referrer-when-downgrade"
-                    src="https://www.google.com/maps/embed/v1/place?key=AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0&q={{ locations[0]['location']['name'] }}+{{ locations[0]['location'].get('city', 'Italy') }}&zoom=12">
-                </iframe>
+                <!-- Google Maps JavaScript API 将在这里渲染地图 -->
             </div>
             <div class="map-locations-list">
                 {% for loc in locations %}
                 {% if loc.get('location') %}
-                <div class="map-location-item" onclick="showLocationOnMap({{ loop.index }}, '{{ loc['location']['name'] }}', {{ loc['location']['coordinates'][0] }}, {{ loc['location']['coordinates'][1] }})">
-                    <span class="number">{{ loop.index + 1 }}</span>
+                <div class="map-location-item" onclick="focusMarker({{ loop.index - 1 }})">
+                    <span class="number">{{ loop.index }}</span>
                     <span class="name">{{ loc['location'].get('name', '景点') }}</span>
-                    <a href="https://www.google.com/maps/search/?api=1&query={{ loc['location']['name'] }}+{{ loc['location'].get('city', '') }}" target="_blank" class="view-map-btn">
+                    <a href="https://www.google.com/maps/search/?api=1&query={{ loc['location']['name'] }}+{{ loc['location'].get('city', '') }}" target="_blank" class="view-map-btn" onclick="event.stopPropagation()">
                         <i class="bi bi-box-arrow-up-right me-1"></i>打开
                     </a>
                 </div>
@@ -869,38 +866,134 @@ body.reading-mode .day-navigation {
 <script>
 // ==================== 地图功能 ====================
 const GOOGLE_MAPS_API_KEY = 'AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0';
+let dayMap = null;
+let markers = [];
 
-// 显示指定景点在地图上
-function showLocationOnMap(index, name, lat, lng) {
-    const mapFrame = document.getElementById('dayMapFrame');
-    if (mapFrame) {
-        // 使用Google Maps Embed API显示指定位置
-        const query = encodeURIComponent(name + ', Italy');
-        mapFrame.src = `https://www.google.com/maps/embed/v1/place?key=${GOOGLE_MAPS_API_KEY}&q=${query}&zoom=15`;
+// 初始化地图（显示所有景点）
+function initDayMap() {
+    const mapContainer = document.getElementById('dayMapContainer');
+    if (!mapContainer) return;
+
+    // 获取景点数据
+    const locationsDataEl = document.getElementById('locations-data');
+    if (!locationsDataEl) return;
+
+    let locations = [];
+    try {
+        locations = JSON.parse(locationsDataEl.textContent);
+    } catch (e) {
+        console.log('No location data available');
+        return;
     }
 
-    // 高亮当前选中的项目
+    if (!locations || locations.length === 0) return;
+
+    // 提取有效坐标
+    const validLocations = locations.filter(loc =>
+        loc && loc.location && loc.location.coordinates &&
+        loc.location.coordinates.length >= 2
+    );
+
+    if (validLocations.length === 0) return;
+
+    // 计算地图中心点和边界
+    const bounds = new google.maps.LatLngBounds();
+
+    // 创建地图
+    dayMap = new google.maps.Map(mapContainer, {
+        mapTypeId: google.maps.MapTypeId.ROADMAP,
+        styles: [
+            { featureType: "poi", elementType: "labels", stylers: [{ visibility: "off" }] }
+        ]
+    });
+
+    // 为每个景点创建标记
+    validLocations.forEach((loc, index) => {
+        const coords = loc.location.coordinates;
+        const position = { lat: coords[0], lng: coords[1] };
+
+        // 创建标记
+        const marker = new google.maps.Marker({
+            position: position,
+            map: dayMap,
+            title: loc.location.name,
+            label: {
+                text: String(index + 1),
+                color: 'white',
+                fontSize: '12px',
+                fontWeight: 'bold'
+            },
+            icon: {
+                path: google.maps.SymbolPath.CIRCLE,
+                fillColor: '#00b894',
+                fillOpacity: 1,
+                strokeColor: '#ffffff',
+                strokeWeight: 2,
+                scale: 15
+            }
+        });
+
+        // 添加信息窗口
+        const infoWindow = new google.maps.InfoWindow({
+            content: `<div style="padding: 5px;"><strong>${loc.location.name}</strong><br>
+                <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc.location.name + ', ' + (loc.location.city || 'Italy'))}" target="_blank" style="color: #00b894;">在Google Maps中打开 →</a></div>`
+        });
+
+        marker.addListener('click', () => {
+            // 关闭所有其他信息窗口
+            markers.forEach(m => m.infoWindow && m.infoWindow.close());
+            infoWindow.open(dayMap, marker);
+            highlightLocationItem(index);
+        });
+
+        marker.infoWindow = infoWindow;
+        markers.push(marker);
+
+        // 扩展边界
+        bounds.extend(position);
+    });
+
+    // 调整地图视图以包含所有标记
+    dayMap.fitBounds(bounds, { padding: 50 });
+
+    // 如果只有一个景点，设置固定缩放级别
+    if (validLocations.length === 1) {
+        dayMap.setZoom(15);
+    }
+}
+
+// 聚焦到指定标记
+function focusMarker(index) {
+    if (!dayMap || !markers[index]) return;
+
+    const marker = markers[index];
+
+    // 关闭所有信息窗口
+    markers.forEach(m => m.infoWindow && m.infoWindow.close());
+
+    // 平移到标记位置
+    dayMap.panTo(marker.getPosition());
+    dayMap.setZoom(16);
+
+    // 打开信息窗口
+    marker.infoWindow.open(dayMap, marker);
+
+    // 高亮列表项
+    highlightLocationItem(index);
+}
+
+// 高亮列表项
+function highlightLocationItem(index) {
     document.querySelectorAll('.map-location-item').forEach((item, i) => {
-        if (i + 1 === index) {
+        if (i === index) {
             item.style.background = 'var(--accent-light)';
             item.style.borderLeft = '3px solid var(--accent-primary)';
+            item.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
             item.style.background = '';
             item.style.borderLeft = '';
         }
     });
-}
-
-// 初始化地图（显示第一个景点）
-function initDayMap() {
-    const mapFrame = document.getElementById('dayMapFrame');
-    if (!mapFrame) return;
-
-    // 从页面获取第一个景点信息
-    const firstItem = document.querySelector('.map-location-item');
-    if (firstItem) {
-        firstItem.click();
-    }
 }
 
 // 为每个景点标题添加地图链接
@@ -945,15 +1038,8 @@ function addMapLinksToHeadings() {
 }
 
 // 页面加载完成后初始化
-// 隐藏的景点数据，供JavaScript使用
-const locationsDataElement = document.createElement('script');
-locationsDataElement.id = 'locations-data';
-locationsDataElement.type = 'application/json';
-locationsDataElement.textContent = JSON.stringify({{ locations | tojson }});
-document.body.appendChild(locationsDataElement);
-
 document.addEventListener('DOMContentLoaded', function() {
-    initDayMap();
+    // 初始化地图会在Google Maps API加载完成后自动调用
     setTimeout(addMapLinksToHeadings, 500);
 });
 
@@ -1483,4 +1569,7 @@ function toggleExplanation(idx) {
     }
 }
 </script>
+
+<!-- Google Maps JavaScript API -->
+<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0&callback=initDayMap"></script>
 {% endblock %}
