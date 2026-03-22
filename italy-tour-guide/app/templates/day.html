@@ -503,6 +503,149 @@ body.reading-mode .day-navigation {
         font-size: 0.9rem;
     }
 }
+
+/* Map Styles */
+.day-map-section {
+    background: var(--card-bg);
+    border-radius: 15px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+}
+
+.day-map-section h5 {
+    color: var(--accent-primary);
+    margin-bottom: 1rem;
+    font-family: 'Noto Serif SC', serif;
+}
+
+.day-map-container {
+    position: relative;
+    width: 100%;
+    height: 300px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+.day-map-container iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+.map-locations-list {
+    margin-top: 1rem;
+}
+
+.map-location-item {
+    display: flex;
+    align-items: center;
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.map-location-item:hover {
+    background: var(--accent-light);
+    transform: translateX(5px);
+}
+
+.map-location-item .number {
+    width: 28px;
+    height: 28px;
+    background: var(--accent-primary);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin-right: 0.75rem;
+    flex-shrink: 0;
+}
+
+.map-location-item .name {
+    flex: 1;
+    font-weight: 500;
+}
+
+.map-location-item .view-map-btn {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.8rem;
+    background: var(--accent-light);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 20px;
+    transition: all 0.3s ease;
+}
+
+.map-location-item .view-map-btn:hover {
+    background: var(--accent-primary);
+    color: white;
+}
+
+/* 景点内联地图按钮 */
+.inline-map-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.75rem;
+    background: var(--accent-light);
+    color: var(--accent-primary);
+    border: 1px solid var(--accent-primary);
+    border-radius: 15px;
+    margin-left: 0.5rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    text-decoration: none;
+}
+
+.inline-map-btn:hover {
+    background: var(--accent-primary);
+    color: white;
+    text-decoration: none;
+}
+
+/* 地图模态框 */
+.map-modal .modal-body {
+    padding: 0;
+}
+
+.map-modal .map-frame {
+    width: 100%;
+    height: 400px;
+    border: none;
+}
+
+@media (max-width: 767.98px) {
+    .day-map-container {
+        height: 220px;
+    }
+
+    .map-location-item {
+        padding: 0.5rem;
+    }
+
+    .map-location-item .number {
+        width: 24px;
+        height: 24px;
+        font-size: 0.7rem;
+    }
+
+    .map-location-item .name {
+        font-size: 0.9rem;
+    }
+
+    .map-modal .map-frame {
+        height: 300px;
+    }
+}
 </style>
 {% endblock %}
 
@@ -541,6 +684,35 @@ body.reading-mode .day-navigation {
 <!-- Content -->
 <section class="day-content" id="content">
     <div class="container">
+        <!-- Day Map Section -->
+        {% if locations and locations|length > 0 %}
+        <div class="day-map-section">
+            <h5><i class="bi bi-map me-2"></i>今日景点地图</h5>
+            <div class="day-map-container" id="dayMapContainer">
+                <iframe
+                    id="dayMapFrame"
+                    loading="lazy"
+                    allowfullscreen
+                    referrerpolicy="no-referrer-when-downgrade"
+                    src="https://www.google.com/maps/embed/v1/place?key=AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0&q={{ locations[0]['location']['name'] }}+{{ locations[0]['location'].get('city', 'Italy') }}&zoom=12">
+                </iframe>
+            </div>
+            <div class="map-locations-list">
+                {% for loc in locations %}
+                {% if loc.get('location') %}
+                <div class="map-location-item" onclick="showLocationOnMap({{ loop.index }}, '{{ loc['location']['name'] }}', {{ loc['location']['coordinates'][0] }}, {{ loc['location']['coordinates'][1] }})">
+                    <span class="number">{{ loop.index + 1 }}</span>
+                    <span class="name">{{ loc['location'].get('name', '景点') }}</span>
+                    <a href="https://www.google.com/maps/search/?api=1&query={{ loc['location']['name'] }}+{{ loc['location'].get('city', '') }}" target="_blank" class="view-map-btn">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>打开
+                    </a>
+                </div>
+                {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         <div class="row">
             <!-- Main Content -->
             <div class="col-lg-8">
@@ -695,6 +867,96 @@ body.reading-mode .day-navigation {
 
 {% block extra_js %}
 <script>
+// ==================== 地图功能 ====================
+const GOOGLE_MAPS_API_KEY = 'AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0';
+
+// 显示指定景点在地图上
+function showLocationOnMap(index, name, lat, lng) {
+    const mapFrame = document.getElementById('dayMapFrame');
+    if (mapFrame) {
+        // 使用Google Maps Embed API显示指定位置
+        const query = encodeURIComponent(name + ', Italy');
+        mapFrame.src = `https://www.google.com/maps/embed/v1/place?key=${GOOGLE_MAPS_API_KEY}&q=${query}&zoom=15`;
+    }
+
+    // 高亮当前选中的项目
+    document.querySelectorAll('.map-location-item').forEach((item, i) => {
+        if (i + 1 === index) {
+            item.style.background = 'var(--accent-light)';
+            item.style.borderLeft = '3px solid var(--accent-primary)';
+        } else {
+            item.style.background = '';
+            item.style.borderLeft = '';
+        }
+    });
+}
+
+// 初始化地图（显示第一个景点）
+function initDayMap() {
+    const mapFrame = document.getElementById('dayMapFrame');
+    if (!mapFrame) return;
+
+    // 从页面获取第一个景点信息
+    const firstItem = document.querySelector('.map-location-item');
+    if (firstItem) {
+        firstItem.click();
+    }
+}
+
+// 为每个景点标题添加地图链接
+function addMapLinksToHeadings() {
+    const headings = document.querySelectorAll('.article-content h2, .article-content h3');
+    const locationsData = document.getElementById('locations-data');
+    let locations = [];
+
+    try {
+        locations = locationsData ? JSON.parse(locationsData.textContent) : [];
+    } catch (e) {
+        console.log('No location data available');
+        return;
+    }
+
+    headings.forEach((heading, index) => {
+        // 跳过已经有地图按钮的标题
+        if (heading.querySelector('.inline-map-btn')) return;
+
+        // 尝试从标题文本匹配景点名称
+        const headingText = heading.textContent.trim();
+
+        // 查找匹配的景点
+        const matchingLocation = locations.find(loc => {
+            if (!loc || !loc.location) return false;
+            const locName = loc.location.name || '';
+            return headingText.includes(locName) || locName.includes(headingText.substring(0, 10));
+        });
+
+        if (matchingLocation) {
+            const mapBtn = document.createElement('a');
+            mapBtn.className = 'inline-map-btn';
+            mapBtn.innerHTML = '<i class="bi bi-geo-alt"></i> 地图';
+            mapBtn.href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(matchingLocation.location.name + ', ' + (matchingLocation.location.city || 'Italy'))}`;
+            mapBtn.target = '_blank';
+            mapBtn.title = '在Google地图中查看';
+
+            // 插入到标题末尾
+            heading.appendChild(mapBtn);
+        }
+    });
+}
+
+// 页面加载完成后初始化
+// 隐藏的景点数据，供JavaScript使用
+const locationsDataElement = document.createElement('script');
+locationsDataElement.id = 'locations-data';
+locationsDataElement.type = 'application/json';
+locationsDataElement.textContent = JSON.stringify({{ locations | tojson }});
+document.body.appendChild(locationsDataElement);
+
+document.addEventListener('DOMContentLoaded', function() {
+    initDayMap();
+    setTimeout(addMapLinksToHeadings, 500);
+});
+
 // ==================== TTS 语音导览系统 ====================
 
 class TTSController {

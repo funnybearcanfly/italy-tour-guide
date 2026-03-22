@@ -18,6 +18,9 @@ DAYS_DIR = os.path.join(GUIDE_DIR, 'days')
 TEMPLATE_DIR = os.path.join(BASE_DIR, 'app', 'templates')
 STATIC_DIR = os.path.join(BASE_DIR, 'app', 'static')
 
+# Google Maps API Key
+GOOGLE_MAPS_API_KEY = 'AIzaSyAreYGzqcrCjldrwU0wiAi0s7CAjVM51L0'
+
 app = Flask(__name__,
             template_folder=TEMPLATE_DIR,
             static_folder=STATIC_DIR)
