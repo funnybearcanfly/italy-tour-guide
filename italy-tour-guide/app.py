@@ -670,10 +670,18 @@ def extract_yaml_blocks(content):
     matches = re.findall(pattern, content, re.DOTALL)
     for match in matches:
         try:
-            data = yaml.safe_load(match)
+            # 去掉YAML文档分隔符（---）
+            clean_match = match.strip()
+            if clean_match.startswith('---'):
+                clean_match = clean_match[3:].strip()
+            if clean_match.endswith('---'):
+                clean_match = clean_match[:-3].strip()
+
+            data = yaml.safe_load(clean_match)
             if data:
                 blocks.append(data)
-        except:
+        except Exception as e:
+            print(f"YAML parse error: {e}")
             pass
     return blocks
 
