@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+
+{% block title %}{{ city_name }} - 意大利旅游解说{% endblock %}
+
+{% block extra_css %}
+<style>
+.city-hero {
+    height: 60vh;
+    min-height: 400px;
+    background: linear-gradient(135deg, rgba(45, 52, 54, 0.85), rgba(99, 110, 114, 0.7)),
+                var(--city-image) center/cover no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: white;
+    position: relative;
+}
+
+.city-hero::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 100px;
+    background: linear-gradient(transparent, var(--bg-primary));
+}
+
+.city-hero h1 {
+    font-size: 4rem;
+    font-weight: 700;
+    text-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+}
+
+.city-hero .subtitle {
+    font-size: 1.3rem;
+    opacity: 0.9;
+}
+
+.city-days {
+    padding: 60px 0;
+}
+
+.day-card {
+    background: var(--card-bg);
+    border-radius: 15px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+    border: 1px solid var(--border-color);
+    height: 100%;
+}
+
+.day-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 30px rgba(0,0,0,0.1);
+}
+
+.day-card-header {
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    color: white;
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.day-card-body {
+    padding: 1.5rem;
+}
+
+.day-card h4 {
+    font-family: 'Noto Serif SC', serif;
+    margin-bottom: 1rem;
+}
+
+.day-card ul {
+    list-style: none;
+    padding-left: 0;
+    margin-bottom: 0;
+}
+
+.day-card li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.day-card li:last-child {
+    border-bottom: none;
+}
+
+.day-card li i {
+    color: var(--accent-primary);
+    margin-right: 0.5rem;
+}
+
+.city-info {
+    background: var(--bg-secondary);
+    padding: 60px 0;
+}
+
+.info-card {
+    background: var(--card-bg);
+    border-radius: 15px;
+    padding: 2rem;
+    height: 100%;
+    border: 1px solid var(--border-color);
+}
+
+.info-card h4 {
+    color: var(--accent-primary);
+    margin-bottom: 1rem;
+}
+
+.info-card i {
+    font-size: 2rem;
+    color: var(--accent-primary);
+    margin-bottom: 1rem;
+}
+</style>
+
+<style>
+/* City-specific hero backgrounds */
+.city-hero[data-city="milan"] {
+    --city-image: url('https://images.unsplash.com/photo-1513581166391-887a96ddeafd?w=1920');
+}
+.city-hero[data-city="venice"] {
+    --city-image: url('https://images.unsplash.com/photo-1523906834658-6e24ef2386f9?w=1920');
+}
+.city-hero[data-city="florence"] {
+    --city-image: url('https://images.unsplash.com/photo-1543429258-c5f79c834bce?w=1920');
+}
+.city-hero[data-city="rome"] {
+    --city-image: url('https://images.unsplash.com/photo-1552832230-c0197dd311b5?w=1920');
+}
+.city-hero[data-city="tuscany"] {
+    --city-image: url('https://images.unsplash.com/photo-1523531294919-4bcd7c65e216?w=1920');
+}
+.city-hero[data-city="vatican"] {
+    --city-image: url('https://images.unsplash.com/photo-1531572753322-ad063cecc140?w=1920');
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Hero -->
+<section class="city-hero" data-city="{{ city_key }}">
+    <div class="container">
+        <h1>{{ city_name }}</h1>
+        <p class="subtitle">探索这座城市的艺术与历史</p>
+    </div>
+</section>
+
+<!-- Days in this city -->
+<section class="city-days">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h2 class="section-title">在{{ city_name }}的行程</h2>
+            <p class="text-muted">共 {{ days|length }} 天</p>
+        </div>
+
+        <div class="row g-4">
+            {% for day in days %}
+            <div class="col-md-6">
+                <a href="{{ url_for('day_detail', day_num=loop.index + (days[0].filename[3]|int - 1) if days else 1) }}" class="text-decoration-none">
+                    <div class="day-card">
+                        <div class="day-card-header">
+                            <span><i class="bi bi-calendar-day me-2"></i>Day {{ loop.index }}</span>
+                            <span class="badge bg-light text-dark">{{ day.date[:10] if day.date else '' }}</span>
+                        </div>
+                        <div class="day-card-body">
+                            <h4>{{ day.title }}</h4>
+                            {% if day.schedule %}
+                            <ul>
+                                {% for item in day.schedule[:5] %}
+                                <li>
+                                    <i class="bi bi-geo-alt"></i>
+                                    {{ item.location }} - {{ item.activity[:30] }}{% if item.activity|length > 30 %}...{% endif %}
+                                </li>
+                                {% endfor %}
+                            </ul>
+                            {% endif %}
+                        </div>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<!-- City Info -->
+<section class="city-info">
+    <div class="container">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="info-card text-center">
+                    <i class="bi bi-building"></i>
+                    <h4>建筑看点</h4>
+                    <p class="text-muted mb-0">
+                        {% if city_key == 'milan' %}
+                        米兰大教堂、斯福尔扎古堡、埃马努埃莱二世拱廊
+                        {% elif city_key == 'venice' %}
+                        圣马可大教堂、总督宫、叹息桥
+                        {% elif city_key == 'florence' %}
+                        百花大教堂、乌菲兹美术馆、老桥
+                        {% elif city_key == 'rome' %}
+                        斗兽场、万神庙、圣彼得大教堂
+                        {% elif city_key == 'tuscany' %}
+                        奥尔恰谷、丝柏树大道、中世纪山城
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="info-card text-center">
+                    <i class="bi bi-palette"></i>
+                    <h4>艺术珍藏</h4>
+                    <p class="text-muted mb-0">
+                        {% if city_key == 'milan' %}
+                        《最后的晚餐》达·芬奇
+                        {% elif city_key == 'venice' %}
+                        《天堂》丁托列托
+                        {% elif city_key == 'florence' %}
+                        《大卫》米开朗基罗、《维纳斯的诞生》波提切利
+                        {% elif city_key == 'rome' %}
+                        西斯廷天花板、贝尔尼尼雕塑
+                        {% elif city_key == 'tuscany' %}
+                        锡耶纳湿壁画
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="info-card text-center">
+                    <i class="bi bi-clock-history"></i>
+                    <h4>历史时期</h4>
+                    <p class="text-muted mb-0">
+                        {% if city_key == 'milan' %}
+                        文艺复兴、斯福尔扎公国
+                        {% elif city_key == 'venice' %}
+                        中世纪、海上共和国
+                        {% elif city_key == 'florence' %}
+                        文艺复兴、美第奇家族
+                        {% elif city_key == 'rome' %}
+                        古罗马、巴洛克
+                        {% elif city_key == 'tuscany' %}
+                        中世纪、文艺复兴田园
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,426 @@
+{% extends "base.html" %}
+
+{% block title %}意大利10天9晚深度文化之旅{% endblock %}
+
+{% block extra_css %}
+<style>
+.hero {
+    height: 100vh;
+    min-height: 600px;
+    background: linear-gradient(135deg, rgba(45, 52, 54, 0.8), rgba(99, 110, 114, 0.7)),
+                url('https://images.unsplash.com/photo-1534445867742-43195f401b6c?w=1920') center/cover no-repeat;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: white;
+    position: relative;
+}
+
+.hero::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 150px;
+    background: linear-gradient(transparent, var(--bg-primary));
+}
+
+.hero-content {
+    position: relative;
+    z-index: 1;
+}
+
+.hero h1 {
+    font-size: 4rem;
+    font-weight: 700;
+    margin-bottom: 1rem;
+    text-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+}
+
+.hero .subtitle {
+    font-size: 1.5rem;
+    opacity: 0.9;
+    margin-bottom: 2rem;
+}
+
+.hero .date {
+    font-size: 1.2rem;
+    background: rgba(255,255,255,0.1);
+    display: inline-block;
+    padding: 0.5rem 1.5rem;
+    border-radius: 50px;
+    margin-bottom: 2rem;
+}
+
+.scroll-indicator {
+    position: absolute;
+    bottom: 50px;
+    left: 50%;
+    transform: translateX(-50%);
+    animation: bounce 2s infinite;
+    z-index: 2;
+}
+
+@keyframes bounce {
+    0%, 20%, 50%, 80%, 100% { transform: translateX(-50%) translateY(0); }
+    40% { transform: translateX(-50%) translateY(-20px); }
+    60% { transform: translateX(-50%) translateY(-10px); }
+}
+
+.journey-map {
+    padding: 80px 0;
+    background: var(--bg-secondary);
+}
+
+.day-card {
+    background: var(--card-bg);
+    border-radius: 20px;
+    overflow: hidden;
+    transition: all 0.4s ease;
+    border: 1px solid var(--border-color);
+    height: 100%;
+}
+
+.day-card:hover {
+    transform: translateY(-10px);
+    box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+}
+
+.day-card .day-number {
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    color: white;
+    padding: 1rem 1.5rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.day-card .day-number .num {
+    font-size: 2rem;
+    font-weight: 700;
+}
+
+.day-card .card-body {
+    padding: 1.5rem;
+}
+
+.day-card .city-tag {
+    display: inline-block;
+    background: var(--accent-light);
+    color: var(--accent-primary);
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    margin-bottom: 0.75rem;
+}
+
+.day-card h5 {
+    font-family: 'Noto Serif SC', serif;
+    margin-bottom: 1rem;
+    line-height: 1.4;
+}
+
+.day-card .schedule-preview {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.day-card .schedule-preview li {
+    margin-bottom: 0.5rem;
+}
+
+.cities-section {
+    padding: 80px 0;
+}
+
+.city-card {
+    position: relative;
+    height: 300px;
+    border-radius: 20px;
+    overflow: hidden;
+    margin-bottom: 30px;
+    transition: transform 0.4s ease;
+}
+
+.city-card:hover {
+    transform: scale(1.02);
+}
+
+.city-card img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.6s ease;
+}
+
+.city-card:hover img {
+    transform: scale(1.1);
+}
+
+.city-card .overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 2rem;
+    color: white;
+}
+
+.city-card h3 {
+    font-family: 'Playfair Display', serif;
+    margin-bottom: 0.5rem;
+}
+
+.city-card p {
+    opacity: 0.8;
+    font-size: 0.9rem;
+}
+
+.stats-section {
+    padding: 60px 0;
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+    color: white;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 2rem;
+}
+
+.stat-item .num {
+    font-size: 3.5rem;
+    font-weight: 700;
+    font-family: 'Playfair Display', serif;
+    display: block;
+}
+
+.stat-item .label {
+    font-size: 1rem;
+    opacity: 0.9;
+}
+
+.highlights-section {
+    padding: 80px 0;
+}
+
+.highlight-item {
+    text-align: center;
+    padding: 2rem;
+}
+
+.highlight-item i {
+    font-size: 3rem;
+    color: var(--accent-primary);
+    margin-bottom: 1rem;
+}
+
+.highlight-item h4 {
+    font-family: 'Noto Serif SC', serif;
+    margin-bottom: 0.5rem;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Hero Section -->
+<section class="hero">
+    <div class="hero-content">
+        <div class="date">
+            <i class="bi bi-calendar-heart me-2"></i>2026年3月28日 - 4月6日
+        </div>
+        <h1 class="display-1">意大利深度文化之旅</h1>
+        <p class="subtitle">从古罗马到文艺复兴，从巴洛克到现代意大利<br>一场跨越2000年的艺术与历史探索</p>
+        <a href="#journey" class="btn btn-light btn-lg px-4 py-2">
+            <i class="bi bi-compass me-2"></i>开始探索
+        </a>
+    </div>
+    <div class="scroll-indicator">
+        <a href="#journey" class="text-white">
+            <i class="bi bi-chevron-double-down fs-2"></i>
+        </a>
+    </div>
+</section>
+
+<!-- Journey Map Section -->
+<section class="journey-map" id="journey">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h2 class="section-title">行程概览</h2>
+            <p class="text-muted">10天9晚，穿越意大利的艺术与历史</p>
+        </div>
+
+        <div class="row g-4">
+            {% for day in days %}
+            <div class="col-lg-4 col-md-6">
+                <a href="{{ url_for('day_detail', day_num=loop.index) }}" class="text-decoration-none">
+                    <div class="day-card">
+                        <div class="day-number">
+                            <span><i class="bi bi-calendar-day me-2"></i>DAY</span>
+                            <span class="num">{{ "%02d"|format(loop.index) }}</span>
+                        </div>
+                        <div class="card-body">
+                            {% if day.city %}
+                            <span class="city-tag">{{ day.city[:15] }}{% if day.city|length > 15 %}...{% endif %}</span>
+                            {% endif %}
+                            <h5>{{ day.title[:30] }}{% if day.title|length > 30 %}...{% endif %}</h5>
+                            {% if day.schedule %}
+                            <ul class="list-unstyled schedule-preview">
+                                {% for item in day.schedule[:3] %}
+                                <li><i class="bi bi-clock me-2 text-primary"></i>{{ item.time }} - {{ item.activity[:20] }}{% if item.activity|length > 20 %}...{% endif %}</li>
+                                {% endfor %}
+                            </ul>
+                            {% endif %}
+                            <div class="mt-3 text-end">
+                                <span class="btn btn-sm btn-outline-primary">查看详情 <i class="bi bi-arrow-right"></i></span>
+                            </div>
+                        </div>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<!-- Stats Section -->
+<section class="stats-section">
+    <div class="container">
+        <div class="row">
+            <div class="col-6 col-md-3">
+                <div class="stat-item">
+                    <span class="num">10</span>
+                    <span class="label">天行程</span>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-item">
+                    <span class="num">6</span>
+                    <span class="label">座城市</span>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-item">
+                    <span class="num">60+</span>
+                    <span class="label">个景点</span>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="stat-item">
+                    <span class="num">2000</span>
+                    <span class="label">年历史</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Cities Section -->
+<section class="cities-section">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h2 class="section-title">探索城市</h2>
+            <p class="text-muted">从时尚之都到永恒之城</p>
+        </div>
+
+        <div class="row">
+            <div class="col-md-6">
+                <div class="city-card">
+                    <img src="https://images.unsplash.com/photo-1513581166391-887a96ddeafd?w=800" alt="米兰">
+                    <div class="overlay">
+                        <h3>Milano 米兰</h3>
+                        <p>时尚之都 · 达·芬奇的实验室</p>
+                        <a href="{{ url_for('city_detail', city_name='milan') }}" class="btn btn-outline-light btn-sm mt-2">探索米兰</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="city-card">
+                    <img src="https://images.unsplash.com/photo-1523906834658-6e24ef2386f9?w=800" alt="威尼斯">
+                    <div class="overlay">
+                        <h3>Venezia 威尼斯</h3>
+                        <p>水上童话 · 千年共和国</p>
+                        <a href="{{ url_for('city_detail', city_name='venice') }}" class="btn btn-outline-light btn-sm mt-2">探索威尼斯</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="city-card">
+                    <img src="https://images.unsplash.com/photo-1543429258-c5f79c834bce?w=800" alt="佛罗伦萨">
+                    <div class="overlay">
+                        <h3>Firenze 佛罗伦萨</h3>
+                        <p>文艺复兴的摇篮</p>
+                        <a href="{{ url_for('city_detail', city_name='florence') }}" class="btn btn-outline-light btn-sm mt-2">探索</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="city-card">
+                    <img src="https://images.unsplash.com/photo-1552832230-c0197dd311b5?w=800" alt="罗马">
+                    <div class="overlay">
+                        <h3>Roma 罗马</h3>
+                        <p>永恒之城</p>
+                        <a href="{{ url_for('city_detail', city_name='rome') }}" class="btn btn-outline-light btn-sm mt-2">探索</a>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="city-card">
+                    <img src="https://images.unsplash.com/photo-1523531294919-4bcd7c65e216?w=800" alt="托斯卡纳">
+                    <div class="overlay">
+                        <h3>Toscana 托斯卡纳</h3>
+                        <p>田园诗般的乡村</p>
+                        <a href="{{ url_for('city_detail', city_name='tuscany') }}" class="btn btn-outline-light btn-sm mt-2">探索</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Highlights Section -->
+<section class="highlights-section">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h2 class="section-title">艺术与历史</h2>
+            <p class="text-muted">这段旅程将带给你什么</p>
+        </div>
+
+        <div class="row">
+            <div class="col-md-3 col-6">
+                <div class="highlight-item">
+                    <i class="bi bi-palette"></i>
+                    <h4>艺术启蒙</h4>
+                    <p class="text-muted small">从中世纪到巴洛克，了解西方艺术演变</p>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="highlight-item">
+                    <i class="bi bi-bank"></i>
+                    <h4>建筑奇迹</h4>
+                    <p class="text-muted small">古罗马工程与文艺复兴建筑</p>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="highlight-item">
+                    <i class="bi bi-book"></i>
+                    <h4>历史故事</h4>
+                    <p class="text-muted small">美第奇家族、教皇、艺术家传奇</p>
+                </div>
+            </div>
+            <div class="col-md-3 col-6">
+                <div class="highlight-item">
+                    <i class="bi bi-cup-hot"></i>
+                    <h4>美食文化</h4>
+                    <p class="text-muted small">托斯卡纳红酒、佛罗伦萨牛排</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
