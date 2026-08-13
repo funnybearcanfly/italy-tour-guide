@@ -80,6 +80,7 @@ def read_report(category: str, filename: str) -> str | None:
 
 SEC_DATA_DIR = os.environ.get("SEC_MONITOR_DATA_DIR", os.path.expanduser("~/.sec-filing-monitor"))
 SEC_FILINGS_PATH = os.path.join(SEC_DATA_DIR, "filings.json")
+LLM_SUMMARIES_PATH = os.path.join(SEC_DATA_DIR, "llm_summaries.jsonl")
 
 
 def load_sec_filings() -> list:
@@ -90,6 +91,28 @@ def load_sec_filings() -> list:
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
+def load_llm_summaries() -> dict:
+    """Load LLM-written human summaries from the JSONL: {accession: summary}."""
+    out = {}
+    try:
+        with open(LLM_SUMMARIES_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    acc = obj.get("accession")
+                    s = (obj.get("summary") or "").strip()
+                    if acc and s:
+                        out[acc] = s
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        pass
+    return out
 
 
 def filing_documents(filing: dict) -> list:
@@ -118,6 +141,11 @@ def form_class(form: str) -> str:
     if base.startswith(("S-", "F-")) or base.startswith("424B"):
         return "offering"
     return ""
+
+
+def is_insider_form(form: str) -> bool:
+    """True for insider ownership forms (3/4/5) — low signal, grouped separately."""
+    return re.sub(r"/.*$", "", (form or "").upper()) in ("3", "4", "5")
 
 
 # ── HTML templates (inline for simplicity) ──
@@ -262,6 +290,10 @@ a{color:#58a6ff;text-decoration:none}
 .header a{color:#8b949e;font-size:13px}
 .header a:hover{color:#e6edf3}
 .sub{color:#8b949e;font-size:13px;margin-bottom:22px}
+.tabs{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.tabs a{padding:7px 16px;border-radius:8px;background:#161b22;border:1px solid #30363d;color:#8b949e;font-size:13.5px;font-weight:600}
+.tabs a:hover{color:#e6edf3;border-color:#8b949e}
+.tabs a.active{background:#238636;color:#fff;border-color:#238636}
 .filing{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:18px 20px;margin-bottom:14px}
 .filing:hover{border-color:#30363d}
 .f-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
@@ -285,7 +317,11 @@ a{color:#58a6ff;text-decoration:none}
   <h1>📄 SEC Filings</h1>
   <a href="/">← 返回</a>
 </div>
-<div class="sub">共 {{ filings|length }} 份文件 · 数据源 <a href="https://www.sec.gov/edgar" target="_blank" rel="noopener">SEC EDGAR</a> · 「🔗 SEC 原文」跳转官方原文</div>
+<div class="tabs">
+  <a href="/sec" class="{{ 'active' if stype=='material' else '' }}">📄 重要文件 ({{ n_material }})</a>
+  <a href="/sec?type=insider" class="{{ 'active' if stype=='insider' else '' }}">👤 内部人交易 ({{ n_insider }})</a>
+</div>
+<div class="sub">数据源 <a href="https://www.sec.gov/edgar" target="_blank" rel="noopener">SEC EDGAR</a> · 「🔗 SEC 原文」跳转官方原文</div>
 {% if filings %}
 {% for f in filings %}
 <div class="filing">
@@ -295,8 +331,7 @@ a{color:#58a6ff;text-decoration:none}
     <span class="form {{ form_class(f.form) }}">{{ f.form }}</span>
   </div>
   <div class="f-when">{{ f.acceptance_et or f.filing_date }}{% if f.sector %} · {{ f.sector }}{% endif %}</div>
-  {% if f.summary %}<div class="f-summary">{{ f.summary }}</div>{% endif %}
-  {% if f.excerpt %}<div class="f-excerpt">{{ f.excerpt[:360] }}{% if f.excerpt|length > 360 %}…{% endif %}</div>{% endif %}
+  {% if f.llm_summary or f.summary %}<div class="f-summary">{{ f.llm_summary or f.summary }}</div>{% endif %}
   <div class="f-links">
     <a href="/sec/{{ f.accession }}">📖 全文</a>
     <a href="{{ f.index_url }}" target="_blank" rel="noopener">🔗 SEC 原文 ↗</a>
@@ -333,7 +368,7 @@ h1{font-size:20px;color:#f0f6fc;font-weight:600;border-bottom:1px solid #30363d;
 <div class="back"><a href="/sec">← 返回 SEC 列表</a></div>
 <h1>${{ filing.ticker }} — {{ filing.company or filing.ticker }} · {{ filing.form }}</h1>
 <div class="meta">{{ filing.acceptance_et or filing.filing_date }} · <a href="{{ filing.index_url }}" target="_blank" rel="noopener">🔗 SEC 原文 ↗</a></div>
-{% if filing.summary %}<div class="summary">📌 {{ filing.summary }}</div>{% endif %}
+{% if filing.llm_summary or filing.summary %}<div class="summary">📌 {{ filing.llm_summary or filing.summary }}</div>{% endif %}
 {% for d in docs %}
 <div class="doc">
   <h3>{{ d.filename }} <span style="color:#8b949e;font-weight:400">({{ d.role }})</span></h3>
@@ -399,7 +434,17 @@ def sec_index():
     if "user" not in session:
         return redirect("/login")
     filings = load_sec_filings()
-    return render_template_string(SEC_INDEX_HTML, filings=filings, form_class=form_class)
+    llm = load_llm_summaries()
+    for f in filings:
+        f["llm_summary"] = llm.get(f.get("accession"), "")
+    stype = request.args.get("type", "material")
+    material = [f for f in filings if not is_insider_form(f.get("form", ""))]
+    insider = [f for f in filings if is_insider_form(f.get("form", ""))]
+    shown = insider if stype == "insider" else material
+    return render_template_string(
+        SEC_INDEX_HTML, filings=shown, form_class=form_class, stype=stype,
+        n_material=len(material), n_insider=len(insider),
+    )
 
 
 @app.route("/sec/<accession>")
@@ -410,6 +455,7 @@ def sec_detail(accession):
     filing = next((f for f in filings if f.get("accession") == accession), None)
     if filing is None:
         return "not found", 404
+    filing["llm_summary"] = load_llm_summaries().get(filing.get("accession"), "")
     docs = filing_documents(filing)
     return render_template_string(SEC_DETAIL_HTML, filing=filing, docs=docs)
 
