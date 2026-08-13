@@ -294,6 +294,11 @@ a{color:#58a6ff;text-decoration:none}
 .tabs a{padding:7px 16px;border-radius:8px;background:#161b22;border:1px solid #30363d;color:#8b949e;font-size:13.5px;font-weight:600}
 .tabs a:hover{color:#e6edf3;border-color:#8b949e}
 .tabs a.active{background:#238636;color:#fff;border-color:#238636}
+.pager{display:flex;align-items:center;gap:8px;margin:24px 0 8px;flex-wrap:wrap}
+.pager .pg{padding:6px 12px;border-radius:6px;background:#161b22;border:1px solid #30363d;color:#8b949e;font-size:13px;text-decoration:none}
+.pager .pg:hover{color:#e6edf3;border-color:#8b949e}
+.pager .pg.cur{background:#238636;color:#fff;border-color:#238636;font-weight:600}
+.pager .info{color:#8b949e;font-size:12.5px;margin-left:auto}
 .filing{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:18px 20px;margin-bottom:14px}
 .filing:hover{border-color:#30363d}
 .f-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
@@ -340,6 +345,16 @@ a{color:#58a6ff;text-decoration:none}
 {% endfor %}
 {% else %}
 <div class="empty">暂无 SEC 文件</div>
+{% endif %}
+{% if total_pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a class="pg" href="/sec?type={{ stype }}&page={{ page - 1 }}">‹ 上一页</a>{% endif %}
+  {% for p in range(1, total_pages + 1) %}
+    {% if p == page %}<span class="pg cur">{{ p }}</span>{% else %}<a class="pg" href="/sec?type={{ stype }}&page={{ p }}">{{ p }}</a>{% endif %}
+  {% endfor %}
+  {% if page < total_pages %}<a class="pg" href="/sec?type={{ stype }}&page={{ page + 1 }}">下一页 ›</a>{% endif %}
+  <span class="info">第 {{ page }} / {{ total_pages }} 页 · 共 {{ total }} 条</span>
+</div>
 {% endif %}
 </body>
 </html>"""
@@ -441,9 +456,21 @@ def sec_index():
     material = [f for f in filings if not is_insider_form(f.get("form", ""))]
     insider = [f for f in filings if is_insider_form(f.get("form", ""))]
     shown = insider if stype == "insider" else material
+
+    per_page = 100
+    total = len(shown)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    try:
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        page = 1
+    page = max(1, min(page, total_pages))
+    page_items = shown[(page - 1) * per_page: page * per_page]
+
     return render_template_string(
-        SEC_INDEX_HTML, filings=shown, form_class=form_class, stype=stype,
+        SEC_INDEX_HTML, filings=page_items, form_class=form_class, stype=stype,
         n_material=len(material), n_insider=len(insider),
+        page=page, total_pages=total_pages, total=total,
     )
 
 
