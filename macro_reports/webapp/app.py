@@ -14,7 +14,30 @@ USERNAME = "bear"
 PASSWORD_HASH = hashlib.sha256("bear2026".encode()).hexdigest()
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+_SECRET_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".secret_key")
+
+
+def _load_secret_key() -> str:
+    """Persist the Flask session signing key so logins survive app restarts."""
+    try:
+        with open(_SECRET_KEY_FILE) as f:
+            k = f.read().strip()
+            if k:
+                return k
+    except FileNotFoundError:
+        pass
+    k = secrets.token_hex(32)
+    with open(_SECRET_KEY_FILE, "w") as f:
+        f.write(k)
+    try:
+        os.chmod(_SECRET_KEY_FILE, 0o600)
+    except OSError:
+        pass
+    return k
+
+
+app.secret_key = _load_secret_key()
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 
 def md_to_html(text: str) -> str:
@@ -167,6 +190,9 @@ body{background:#0f1117;color:#e1e4e8;font:14px/1.6 -apple-system,BlinkMacSystem
 .login button{width:100%;padding:10px;background:#238636;border:none;border-radius:6px;color:#fff;
   font-size:14px;cursor:pointer}
 .login button:hover{background:#2ea043}
+.remember{display:flex;align-items:center;gap:8px;margin:2px 0 16px;color:#8b949e;font-size:13px;
+  cursor:pointer;user-select:none}
+.remember input{width:auto;margin:0;accent-color:#238636}
 .error{color:#f85149;margin-bottom:16px;font-size:13px}
 </style>
 </head>
@@ -177,6 +203,7 @@ body{background:#0f1117;color:#e1e4e8;font:14px/1.6 -apple-system,BlinkMacSystem
 <form method="post">
 <input type="text" name="username" placeholder="用户名" autofocus>
 <input type="password" name="password" placeholder="密码">
+<label class="remember"><input type="checkbox" name="remember" value="1"> 记住我（30 天内免登录）</label>
 <button type="submit">登 录</button>
 </form>
 </div>
@@ -414,6 +441,7 @@ def login():
         pw_hash = hashlib.sha256(password.encode()).hexdigest()
         if username == USERNAME and pw_hash == PASSWORD_HASH:
             session["user"] = username
+            session.permanent = request.form.get("remember") == "1"
             return redirect("/")
         error = "用户名或密码错误"
     return render_template_string(LOGIN_HTML, error=error)
