@@ -108,6 +108,18 @@ def filing_documents(filing: dict) -> list:
     return docs
 
 
+def form_class(form: str) -> str:
+    """CSS class for a form badge, keyed by filing category."""
+    base = re.sub(r"/.*$", "", (form or "").upper())
+    if base in ("3", "4", "5"):
+        return "insider"
+    if base in ("10-Q", "10-K", "6-K", "20-F", "40-F", "11-K", "8-K"):
+        return "periodic"
+    if base.startswith(("S-", "F-")) or base.startswith("424B"):
+        return "offering"
+    return ""
+
+
 # ── HTML templates (inline for simplicity) ──
 
 LOGIN_HTML = """<!DOCTYPE html>
@@ -243,23 +255,29 @@ SEC_INDEX_HTML = """<!DOCTYPE html>
 <title>SEC Filings</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0f1117;color:#e1e4e8;font:14px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:0 auto;padding:24px 20px}
+body{background:#0f1117;color:#e6edf3;font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;max-width:920px;margin:0 auto;padding:28px 22px}
+a{color:#58a6ff;text-decoration:none}
 .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid #30363d}
-.header h1{font-size:18px;color:#f0f6fc}
-.header a{color:#8b949e;text-decoration:none;font-size:13px}
-.header a:hover{color:#e1e4e8}
-.sub{color:#8b949e;font-size:12px;margin-bottom:20px}
-.sub a{color:#58a6ff}
-.filing{border:1px solid #21262d;border-radius:6px;padding:16px;margin-bottom:12px;background:#161b22}
-.filing .top{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:8px;flex-wrap:wrap}
-.filing .tick{color:#f0f6fc;font-weight:600;font-size:15px}
-.filing .form{background:#238636;color:#fff;padding:1px 8px;border-radius:4px;font-size:12px;font-weight:600}
-.filing .meta{color:#8b949e;font-size:12px}
-.filing .reason{color:#e1e4e8;font-size:12px;margin-bottom:6px}
-.filing .excerpt{color:#8b949e;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;max-height:120px;overflow:hidden;border-left:3px solid #30363d;padding-left:12px;margin:8px 0}
-.filing .links a{color:#58a6ff;text-decoration:none;font-size:12px;margin-right:16px}
-.filing .links a:hover{text-decoration:underline}
-.empty{text-align:center;color:#8b949e;padding:48px 0}
+.header h1{font-size:19px;color:#f0f6fc;font-weight:600}
+.header a{color:#8b949e;font-size:13px}
+.header a:hover{color:#e6edf3}
+.sub{color:#8b949e;font-size:13px;margin-bottom:22px}
+.filing{background:#161b22;border:1px solid #21262d;border-radius:8px;padding:18px 20px;margin-bottom:14px}
+.filing:hover{border-color:#30363d}
+.f-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px}
+.tick{color:#58a6ff;font-weight:700;font-size:17px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.company{color:#f0f6fc;font-size:14px;font-weight:600}
+.form{display:inline-block;background:#238636;color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:10px;letter-spacing:.3px}
+.form.insider{background:#6e40c9}
+.form.offering{background:#d29922;color:#1b1f24}
+.form.periodic{background:#1f6feb}
+.f-when{color:#8b949e;font-size:12.5px;margin-bottom:8px}
+.f-summary{color:#e6edf3;font-size:14.5px;font-weight:600;line-height:1.55;margin-bottom:2px}
+.f-excerpt{color:#9da7b3;font-size:12.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:100px;overflow:hidden;border-left:3px solid #30363d;padding-left:12px;margin:8px 0}
+.f-links{font-size:13px;margin-top:2px}
+.f-links a{margin-right:18px}
+.f-links a:hover{text-decoration:underline}
+.empty{text-align:center;color:#8b949e;padding:60px 0}
 </style>
 </head>
 <body>
@@ -271,13 +289,15 @@ body{background:#0f1117;color:#e1e4e8;font:14px/1.6 -apple-system,BlinkMacSystem
 {% if filings %}
 {% for f in filings %}
 <div class="filing">
-  <div class="top">
-    <span class="tick">${{ f.ticker }} — {{ f.company or f.ticker }}</span>
-    <span><span class="form">{{ f.form }}</span><span class="meta"> · {{ f.filing_date }}{% if f.acceptance_et %} · {{ f.acceptance_et }}{% endif %}{% if f.sector %} · {{ f.sector }}{% endif %}</span></span>
+  <div class="f-head">
+    <span class="tick">${{ f.ticker }}</span>
+    <span class="company">{{ f.company or f.ticker }}</span>
+    <span class="form {{ form_class(f.form) }}">{{ f.form }}</span>
   </div>
-  {% if f.reason_summary %}<div class="reason">{{ f.reason_summary }}</div>{% endif %}
-  {% if f.excerpt %}<div class="excerpt">{{ f.excerpt[:400] }}{% if f.excerpt|length > 400 %}…{% endif %}</div>{% endif %}
-  <div class="links">
+  <div class="f-when">{{ f.acceptance_et or f.filing_date }}{% if f.sector %} · {{ f.sector }}{% endif %}</div>
+  {% if f.summary %}<div class="f-summary">{{ f.summary }}</div>{% endif %}
+  {% if f.excerpt %}<div class="f-excerpt">{{ f.excerpt[:360] }}{% if f.excerpt|length > 360 %}…{% endif %}</div>{% endif %}
+  <div class="f-links">
     <a href="/sec/{{ f.accession }}">📖 全文</a>
     <a href="{{ f.index_url }}" target="_blank" rel="noopener">🔗 SEC 原文 ↗</a>
   </div>
@@ -296,25 +316,27 @@ SEC_DETAIL_HTML = """<!DOCTYPE html>
 <title>{{ filing.ticker }} · {{ filing.form }}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0f1117;color:#e1e4e8;font:14px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:0 auto;padding:24px 20px}
+body{background:#0f1117;color:#e6edf3;font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;max-width:920px;margin:0 auto;padding:28px 22px}
+a{color:#58a6ff;text-decoration:none}
 .back{margin-bottom:16px}
-.back a{color:#8b949e;text-decoration:none;font-size:13px}
-.back a:hover{color:#58a6ff}
-h1{font-size:20px;color:#f0f6fc;border-bottom:1px solid #30363d;padding-bottom:12px;margin-bottom:8px}
-.meta{color:#8b949e;font-size:12px;margin-bottom:20px}
-.meta a{color:#58a6ff}
+.back a{color:#8b949e;font-size:13px}
+.back a:hover{color:#e6edf3}
+h1{font-size:20px;color:#f0f6fc;font-weight:600;border-bottom:1px solid #30363d;padding-bottom:12px;margin-bottom:8px}
+.meta{color:#8b949e;font-size:13px;margin-bottom:10px}
+.summary{color:#e6edf3;font-size:15px;font-weight:600;background:#161b22;border:1px solid #21262d;border-radius:6px;padding:12px 16px;margin-bottom:20px}
 .doc{margin-bottom:24px}
-.doc h3{color:#f0f6fc;font-size:13px;margin-bottom:8px;border-bottom:1px solid #21262d;padding-bottom:6px}
-.doc pre{background:#161b22;border:1px solid #21262d;border-radius:6px;padding:16px;font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#e1e4e8;max-height:70vh;overflow:auto}
+.doc h3{color:#f0f6fc;font-size:13px;font-weight:600;margin-bottom:8px;border-bottom:1px solid #21262d;padding-bottom:6px}
+.doc pre{background:#161b22;border:1px solid #21262d;border-radius:6px;padding:16px;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;color:#c9d1d9;max-height:70vh;overflow:auto}
 </style>
 </head>
 <body>
 <div class="back"><a href="/sec">← 返回 SEC 列表</a></div>
 <h1>${{ filing.ticker }} — {{ filing.company or filing.ticker }} · {{ filing.form }}</h1>
-<div class="meta">{{ filing.filing_date }}{% if filing.acceptance_et %} · {{ filing.acceptance_et }}{% endif %} · <a href="{{ filing.index_url }}" target="_blank" rel="noopener">🔗 SEC 原文 ↗</a></div>
+<div class="meta">{{ filing.acceptance_et or filing.filing_date }} · <a href="{{ filing.index_url }}" target="_blank" rel="noopener">🔗 SEC 原文 ↗</a></div>
+{% if filing.summary %}<div class="summary">📌 {{ filing.summary }}</div>{% endif %}
 {% for d in docs %}
 <div class="doc">
-  <h3>{{ d.filename }} <span style="color:#8b949e">({{ d.role }})</span></h3>
+  <h3>{{ d.filename }} <span style="color:#8b949e;font-weight:400">({{ d.role }})</span></h3>
   {% if d.text %}<pre>{{ d.text }}</pre>{% else %}<pre style="color:#8b949e">(无提取文本 — 请查看 SEC 原文)</pre>{% endif %}
 </div>
 {% endfor %}
@@ -377,7 +399,7 @@ def sec_index():
     if "user" not in session:
         return redirect("/login")
     filings = load_sec_filings()
-    return render_template_string(SEC_INDEX_HTML, filings=filings)
+    return render_template_string(SEC_INDEX_HTML, filings=filings, form_class=form_class)
 
 
 @app.route("/sec/<accession>")
