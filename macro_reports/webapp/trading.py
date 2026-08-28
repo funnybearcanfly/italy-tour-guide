@@ -278,7 +278,7 @@ def refresh_prices(address: str | None = None) -> dict:
         total_ntl += float(ms.get("totalNtlPos") or 0)
         margin_used += float(ms.get("totalMarginUsed") or 0)
 
-    # spot 侧权益（USDC + 代币按市价）
+    # spot 侧权益：只计 available（total - hold），避免与 perp 保证金双记
     spot_equity = 0.0
     try:
         spot_state = _hl_post({"type": "spotClearinghouseState", "user": address})
@@ -294,11 +294,12 @@ def refresh_prices(address: str | None = None) -> dict:
                 if pr.get("name") == "PURR/USDC":
                     tok_prices["PURR"] = float(px)
         for b in spot_state.get("balances", []):
-            name, amt = b["coin"], float(b.get("total") or 0)
+            name = b["coin"]
+            avail = float(b.get("total") or 0) - float(b.get("hold") or 0)
             if name == "USDC":
-                spot_equity += amt
+                spot_equity += avail
             elif name in tok_prices:
-                spot_equity += amt * tok_prices[name]
+                spot_equity += avail * tok_prices[name]
     except Exception:
         spot_equity = None
     unreal = sum(p["unrealized_pnl"] for p in positions)
@@ -359,9 +360,17 @@ def sync_flows(address: str | None = None) -> dict:
                 flow_type, usdc = "deposit", float(d.get("usdc") or 0)
             elif t == "withdraw":
                 flow_type, usdc = "withdrawal", float(d.get("usdc") or 0)
-            elif t == "spotTransfer" and str(d.get("destination", "")).lower() == address:
-                # 他人转入代币（如空投），按 usdcValue 计入外部入金
-                flow_type, usdc = "spot_transfer_in", float(d.get("usdcValue") or 0)
+            elif t == "spotTransfer":
+                to_self = str(d.get("destination", "")).lower() == address
+                from_self = str(d.get("user", "")).lower() == address
+                if to_self and not from_self:
+                    # 他人转入（USDC/代币/空投）：按转入时 usdcValue 计外部入金
+                    flow_type, usdc = "external_transfer_in", float(d.get("usdcValue") or 0)
+                elif to_self and from_self:
+                    pass  # 自己的划转，不计
+                elif from_self:
+                    # 转给其他地址 = 资金流出
+                    flow_type, usdc = "transfer_out", float(d.get("usdcValue") or 0)
             elif t == "send" and str(d.get("user", "")).lower() == address:
                 dest_self = str(d.get("destination", "")).lower() == address
                 if dest_self:
@@ -377,7 +386,7 @@ def sync_flows(address: str | None = None) -> dict:
         conn.commit()
         row = conn.execute(
             """SELECT
-                 SUM(CASE WHEN flow_type IN ('deposit','transfer_in','spot_transfer_in') THEN usdc ELSE 0 END) inflow,
+                 SUM(CASE WHEN flow_type IN ('deposit','transfer_in','external_transfer_in') THEN usdc ELSE 0 END) inflow,
                  SUM(CASE WHEN flow_type IN ('withdrawal','transfer_out') THEN usdc ELSE 0 END) outflow
                FROM hl_flows"""
         ).fetchone()
@@ -424,7 +433,7 @@ def _stats(conn: sqlite3.Connection) -> dict:
     ).fetchone()["c"]
     flow_row = conn.execute(
         """SELECT
-             SUM(CASE WHEN flow_type IN ('deposit','transfer_in','spot_transfer_in') THEN usdc ELSE 0 END) inflow,
+             SUM(CASE WHEN flow_type IN ('deposit','transfer_in','external_transfer_in') THEN usdc ELSE 0 END) inflow,
              SUM(CASE WHEN flow_type IN ('withdrawal','transfer_out') THEN usdc ELSE 0 END) outflow
            FROM hl_flows"""
     ).fetchone()
