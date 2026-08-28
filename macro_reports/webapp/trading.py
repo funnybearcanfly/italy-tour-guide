@@ -55,14 +55,35 @@ def _spot_name(coin: str) -> str:
             pass
     return _SPOT_NAMES.get(idx, coin)
 
-_LEV_MAP: dict = {}  # 币种 -> maxLeverage，首次 sync 时加载
+_LEV_MAPS: tuple = ({}, {})  # (actual杠杆map, maxLeveragemap)，首次 sync 时加载
 
 
-def _get_lev_map() -> dict:
-    global _LEV_MAP
-    if not _LEV_MAP:
-        _LEV_MAP = _lev_map()
-    return _LEV_MAP
+def _get_lev_maps() -> tuple:
+    global _LEV_MAPS
+    if not _LEV_MAPS[1]:
+        _LEV_MAPS = _lev_map()
+    return _LEV_MAPS
+
+
+def _order_leverage(coin: str, opened_at_ms: int, conn: sqlite3.Connection) -> float | None:
+    """order 开仓时点的实际杠杆：hl_lev_history 里 <= opened_at 的最近快照。
+
+    快照晚于 order（追踪开始前的老 order，多属当前持仓）：用该币最早快照。
+    从未快照过（已平仓的币）：回退 maxLeverage 上限。
+    """
+    row = conn.execute(
+        "SELECT lev FROM hl_lev_history WHERE coin=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+        (coin, opened_at_ms),
+    ).fetchone()
+    if row:
+        return row["lev"]
+    row = conn.execute(
+        "SELECT lev FROM hl_lev_history WHERE coin=? ORDER BY ts ASC LIMIT 1",
+        (coin,),
+    ).fetchone()
+    if row:
+        return row["lev"]
+    return _get_lev_maps()[1].get(coin)
 
 
 # ---------------------------------------------------------------- helpers
@@ -143,6 +164,12 @@ CREATE TABLE IF NOT EXISTS hl_orders (
   est_margin_used REAL           -- 估算保证金占用（名义 / maxLeverage）
 );
 CREATE INDEX IF NOT EXISTS idx_orders_time ON hl_orders(opened_at);
+CREATE TABLE IF NOT EXISTS hl_lev_history (
+  coin TEXT NOT NULL,
+  ts INTEGER NOT NULL,           -- 快照时间 ms
+  lev REAL NOT NULL,             -- 该时点用户实际使用的杠杆
+  PRIMARY KEY (coin, ts)
+);
 
 CREATE TABLE IF NOT EXISTS hl_notes (
   oid INTEGER PRIMARY KEY,
@@ -198,13 +225,13 @@ def _rebuild_order(conn: sqlite3.Connection, oid: int):
     avg_px = abs(notional / signed) if signed else None
     raw_coin = fills[0]["coin"]
     coin = _spot_name(raw_coin)  # '@107' -> 代币名；perp 原样
-    # 杠杆：优先用户实际使用的杠杆（来自持仓 leverage.value），spot 交易无杠杆
-    lev = None if raw_coin.startswith("@") else _LEV_MAP.get(raw_coin)
+    # 杠杆：开仓时点的实际杠杆（hl_lev_history 快照），spot 交易无杠杆
+    lev = None if raw_coin.startswith("@") else _order_leverage(raw_coin, fills[0]["time"], conn)
     if lev and notional:
         est_margin = notional / lev
         est_leverage = float(lev)
     else:
-        est_margin = notional  # spot 或无杠杆数据：无保证金放大
+        est_margin = notional  # spot：无保证金放大
         est_leverage = 1.0
     conn.execute(
         """INSERT INTO hl_orders (oid, coin, side, opened_at, last_fill_at, n_fills,
@@ -232,7 +259,7 @@ def sync_fills(address: str | None = None) -> dict:
     conn = _db()
     try:
         _init_db(conn)
-        _get_lev_map()
+        _get_lev_maps()
         # 总是从 0 开始翻页：增量成本只有 2 次请求，但从 DB 最小时间起会漏掉更早的历史
         all_fills = []
         cursor = 0
@@ -408,14 +435,22 @@ def _lev_map() -> dict:
     try:
         with open(cache) as f:
             blob = json.load(f)
-        if time.time() - blob.get("fetched_at", 0) < 3600:
-            return blob.get("map", {})
+        if (
+            time.time() - blob.get("fetched_at", 0) < 3600
+            and isinstance(blob.get("max_map"), dict)
+            and blob.get("max_map")
+        ):
+            return blob.get("map", {}), blob["max_map"]
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     lev = {}
+    max_lev = {}
+    max_lev = {}
     try:
         address = DEFAULT_ADDRESS.lower()
         dexes = [None] + [d["name"] for d in _hl_post({"type": "perpDexs"}) if d and d.get("name")]
+        now_ms = int(time.time() * 1000)
+        snapshots = []
         for dex in dexes:
             req = {"type": "clearinghouseState", "user": address}
             if dex:
@@ -425,18 +460,33 @@ def _lev_map() -> dict:
                 lv = (pos.get("leverage") or {}).get("value")
                 if lv:
                     lev[pos["coin"]] = lv
+                    snapshots.append((pos["coin"], now_ms, lv))
             mreq = {"type": "meta"} if not dex else {"type": "meta", "dex": dex}
             for u in _hl_post(mreq).get("universe", []):
-                lev.setdefault(u["name"], u.get("maxLeverage"))
+                max_lev[u["name"]] = u.get("maxLeverage")
+        if snapshots:
+            try:
+                conn = _db()
+                try:
+                    _init_db(conn)
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO hl_lev_history (coin, ts, lev) VALUES (?,?,?)",
+                        snapshots,
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            except sqlite3.Error:
+                pass
     except Exception:
-        if not lev:
-            return {}
+        if not max_lev:
+            return {}, {}
     try:
         with open(cache, "w") as f:
-            json.dump({"fetched_at": time.time(), "map": lev}, f)
+            json.dump({"fetched_at": time.time(), "map": lev, "max_map": max_lev}, f)
     except OSError:
         pass
-    return lev
+    return lev, max_lev
 
 
 def sync_flows(address: str | None = None) -> dict:
