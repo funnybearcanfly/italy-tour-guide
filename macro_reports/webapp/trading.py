@@ -33,6 +33,28 @@ NOTES_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 bp = Blueprint("trading", __name__)
 
+_SPOT_NAMES: dict = {}  # spot pair index -> token name，进程内缓存
+
+
+def _spot_name(coin: str) -> str:
+    """把 spot 交易的 '@N' 币种解析成代币名（如 '@107' -> 'FARTCOIN2'）。"""
+    if not coin.startswith("@"):
+        return coin
+    idx = coin  # map key 是 '@107' 全名
+    if not _SPOT_NAMES:
+        try:
+            meta = _hl_post({"type": "spotMeta"})
+            tokens = {t["index"]: t["name"] for t in meta.get("tokens", [])}
+            for p in meta.get("universe", []):
+                toks = p.get("tokens", [])
+                if len(toks) == 2:
+                    base = tokens.get(toks[0], "?")
+                    quote = tokens.get(toks[1], "?")
+                    _SPOT_NAMES[str(p["name"])] = f"{base}/{quote}" if base != "USDC" and quote == "USDC" else f"{base}"
+        except Exception:
+            pass
+    return _SPOT_NAMES.get(idx, coin)
+
 _LEV_MAP: dict = {}  # 币种 -> maxLeverage，首次 sync 时加载
 
 
@@ -174,13 +196,15 @@ def _rebuild_order(conn: sqlite3.Connection, oid: int):
         fees += f["fee"]
         liqs += 1 if f["liquidation"] else 0
     avg_px = abs(notional / signed) if signed else None
-    # 保证金视角：按 maxLeverage 开满所需最低保证金；est_leverage = 名义/最低保证金
-    max_lev = _LEV_MAP.get(fills[0]["coin"])
-    if max_lev and notional:
-        est_margin = notional / max_lev
-        est_leverage = float(max_lev)
+    raw_coin = fills[0]["coin"]
+    coin = _spot_name(raw_coin)  # '@107' -> 代币名；perp 原样
+    # 杠杆：优先用户实际使用的杠杆（来自持仓 leverage.value），spot 交易无杠杆
+    lev = None if raw_coin.startswith("@") else _LEV_MAP.get(raw_coin)
+    if lev and notional:
+        est_margin = notional / lev
+        est_leverage = float(lev)
     else:
-        est_margin = notional  # 保守：无杠杆数据时按 1x 计
+        est_margin = notional  # spot 或无杠杆数据：无保证金放大
         est_leverage = 1.0
     conn.execute(
         """INSERT INTO hl_orders (oid, coin, side, opened_at, last_fill_at, n_fills,
@@ -195,7 +219,7 @@ def _rebuild_order(conn: sqlite3.Connection, oid: int):
              n_liquidations=excluded.n_liquidations,
              est_leverage=excluded.est_leverage, est_margin_used=excluded.est_margin_used""",
         (
-            oid, fills[0]["coin"], fills[0]["dir"], fills[0]["time"], fills[-1]["time"],
+            oid, coin, fills[0]["dir"], fills[0]["time"], fills[-1]["time"],
             len(fills), signed, notional, avg_px,
             closed_pnl, fees, liqs, est_leverage, est_margin,
         ),
@@ -374,22 +398,36 @@ def refresh_prices(address: str | None = None) -> dict:
 
 
 def _lev_map() -> dict:
-    """各币种最大杠杆缓存（meta.maxLeverage，主 dex + 全部 HIP-3 dex），7 天过期。"""
+    """各币种实际使用的杠杆。
+
+    数据源优先级：clearinghouseState 持仓里的 leverage.value（用户真实选择的杠杆，
+    isolated/cross 均适用）> meta.maxLeverage（该币允许的上限，fallback）。
+    覆盖主 dex + 全部 HIP-3 dex，1 小时过期。
+    """
     cache = os.path.join(DATA_DIR, "hl_lev_cache.json")
     try:
         with open(cache) as f:
             blob = json.load(f)
-        if time.time() - blob.get("fetched_at", 0) < 7 * 86400:
+        if time.time() - blob.get("fetched_at", 0) < 3600:
             return blob.get("map", {})
     except (FileNotFoundError, json.JSONDecodeError):
         pass
     lev = {}
     try:
+        address = DEFAULT_ADDRESS.lower()
         dexes = [None] + [d["name"] for d in _hl_post({"type": "perpDexs"}) if d and d.get("name")]
         for dex in dexes:
-            req = {"type": "meta"} if not dex else {"type": "meta", "dex": dex}
-            for u in _hl_post(req).get("universe", []):
-                lev[u["name"]] = u.get("maxLeverage")
+            req = {"type": "clearinghouseState", "user": address}
+            if dex:
+                req["dex"] = dex
+            for ap in _hl_post(req).get("assetPositions", []):
+                pos = ap.get("position", {})
+                lv = (pos.get("leverage") or {}).get("value")
+                if lv:
+                    lev[pos["coin"]] = lv
+            mreq = {"type": "meta"} if not dex else {"type": "meta", "dex": dex}
+            for u in _hl_post(mreq).get("universe", []):
+                lev.setdefault(u["name"], u.get("maxLeverage"))
     except Exception:
         if not lev:
             return {}
