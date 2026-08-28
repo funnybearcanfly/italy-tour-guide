@@ -1,2 +1,3 @@
 data/*.db*
+!trade_notes.json
 __pycache__/
