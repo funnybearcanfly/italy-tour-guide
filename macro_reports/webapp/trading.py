@@ -749,8 +749,8 @@ PAGE = """<!doctype html>
 
 <h2>Order 历史（{{ stats.n_orders }}）</h2>
 <div class="tbl-wrap"><table id="tbl">
-<tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th class="sortable" onclick="sortTbl(this,2)">fills ▾</th>
-<th class="sortable" onclick="sortTbl(this,3)">净成交量</th><th class="sortable" onclick="sortTbl(this,4)">均价</th><th class="sortable" onclick="sortTbl(this,5)">金额（名义）</th><th class="sortable" onclick="sortTbl(this,6)">杠杆</th><th class="sortable" onclick="sortTbl(this,7)">保证金成本</th><th class="sortable" onclick="sortTbl(this,8)">已实现盈亏</th><th class="sortable" onclick="sortTbl(this,9)">手续费</th><th class="l">标签</th></tr>
+<tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th class="sortable" onclick="sortTbl(this,3)">fills ▾</th>
+<th class="sortable" onclick="sortTbl(this,4)">净成交量</th><th class="sortable" onclick="sortTbl(this,5)">均价</th><th class="sortable" onclick="sortTbl(this,6)">金额（名义）</th><th class="sortable" onclick="sortTbl(this,7)">杠杆</th><th class="sortable" onclick="sortTbl(this,8)">保证金成本</th><th class="sortable" onclick="sortTbl(this,9)">已实现盈亏</th><th class="sortable" onclick="sortTbl(this,10)">手续费</th><th class="l">标签</th></tr>
 {% for o in orders %}
 <tr class="order-row" data-oid="{{ o.oid }}" {% if o.n_liquidations %}data-liq="1"{% endif %}>
   <td class="l">{{ o.time_str }}</td>
