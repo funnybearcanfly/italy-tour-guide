@@ -850,7 +850,7 @@ function sortTbl(th, col){
     const y = parseFloat(b.cells[col].textContent.replace(/[$,+%]/g,'')) || 0;
     return dir ? x - y : y - x;
   });
-  rows.forEach(r => tbl.appendChild(r));
+  rows.forEach(r => tbl.tBodies[0].appendChild(r));
   [...tbl.rows[0].cells].forEach(c => { if(c.classList.contains('sortable')) c.textContent = c.textContent.replace(/ [▾▴]$/,''); });
   th.textContent = th.textContent.replace(/ [▾▴]$/,'') + (dir ? ' ▴' : ' ▾');
 }
