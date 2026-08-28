@@ -19,7 +19,7 @@ import os
 import sqlite3
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, redirect, render_template_string, request, session, url_for
 
@@ -63,8 +63,11 @@ def _address() -> str:
     return (request.args.get("addr") or DEFAULT_ADDRESS).strip()
 
 
+HKT = timezone(timedelta(hours=8))
+
+
 def _ts(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.fromtimestamp(ms / 1000, tz=HKT).strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ---------------------------------------------------------------- schema
@@ -121,6 +124,13 @@ CREATE TABLE IF NOT EXISTS hl_account (
   unrealized_pnl REAL,
   leverage REAL,                 -- notional / account_value
   positions TEXT                 -- JSON
+);
+
+CREATE TABLE IF NOT EXISTS hl_flows (
+  hash TEXT PRIMARY KEY,
+  time INTEGER NOT NULL,
+  flow_type TEXT NOT NULL,       -- deposit / withdrawal / transfer_in / transfer_out
+  usdc REAL NOT NULL
 );
 """
 
@@ -267,6 +277,30 @@ def refresh_prices(address: str | None = None) -> dict:
         account_value += float(ms.get("accountValue") or 0)
         total_ntl += float(ms.get("totalNtlPos") or 0)
         margin_used += float(ms.get("totalMarginUsed") or 0)
+
+    # spot 侧权益（USDC + 代币按市价）
+    spot_equity = 0.0
+    try:
+        spot_state = _hl_post({"type": "spotClearinghouseState", "user": address})
+        spot_meta = _hl_post({"type": "spotMetaAndAssetCtxs"})
+        # token index -> 当前价（pair 以 base token 计价）
+        tok_idx_name = {t["index"]: t["name"] for t in spot_meta[0]["tokens"]}
+        tok_prices = {}
+        for pr, ctx in zip(spot_meta[0]["universe"], spot_meta[1]):
+            base, quote = pr["tokens"]
+            px = ctx.get("markPx")
+            if px:
+                tok_prices[tok_idx_name.get(base)] = float(px)
+                if pr.get("name") == "PURR/USDC":
+                    tok_prices["PURR"] = float(px)
+        for b in spot_state.get("balances", []):
+            name, amt = b["coin"], float(b.get("total") or 0)
+            if name == "USDC":
+                spot_equity += amt
+            elif name in tok_prices:
+                spot_equity += amt * tok_prices[name]
+    except Exception:
+        spot_equity = None
     unreal = sum(p["unrealized_pnl"] for p in positions)
 
     conn = _db()
@@ -283,7 +317,7 @@ def refresh_prices(address: str | None = None) -> dict:
             (
                 int(time.time() * 1000), account_value, total_ntl, margin_used,
                 unreal, (total_ntl / account_value) if account_value else None,
-                json.dumps(positions, ensure_ascii=False),
+                json.dumps({"positions": positions, "spot_equity": spot_equity}, ensure_ascii=False),
             ),
         )
         conn.commit()
@@ -292,6 +326,8 @@ def refresh_prices(address: str | None = None) -> dict:
     return {
         "ok": True,
         "account_value": account_value,
+        "spot_equity": spot_equity,
+        "total_equity": account_value + (spot_equity or 0),
         "unrealized_pnl": unreal,
         "leverage": (total_ntl / account_value) if account_value else None,
         "n_positions": len(positions),
@@ -299,7 +335,69 @@ def refresh_prices(address: str | None = None) -> dict:
     }
 
 
-# ---------------------------------------------------------------- queries
+def sync_flows(address: str | None = None) -> dict:
+    """同步链上资金流（userNonFundingLedgerUpdates）。
+
+    只计真正进出地址的钱：
+      deposit             链上充值入 perp
+      accountClassTransfer toPerp=True 算入金，False 算提走（spot 侧）
+      send                destination==自己 → perp↔spot 内部划转：
+                          destinationDex='spot' = perp→spot（对 perp 是流出），
+                          否则 spot→perp（对 perp 是流入）
+    """
+    address = (address or DEFAULT_ADDRESS).lower()
+    updates = _hl_post({"type": "userNonFundingLedgerUpdates", "user": address})
+    conn = _db()
+    try:
+        _init_db(conn)
+        n_new = 0
+        for u in updates:
+            d = u.get("delta", {})
+            t = d.get("type")
+            flow_type, usdc = None, None
+            if t == "deposit":
+                flow_type, usdc = "deposit", float(d.get("usdc") or 0)
+            elif t == "withdraw":
+                flow_type, usdc = "withdrawal", float(d.get("usdc") or 0)
+            elif t == "spotTransfer" and str(d.get("destination", "")).lower() == address:
+                # 他人转入代币（如空投），按 usdcValue 计入外部入金
+                flow_type, usdc = "spot_transfer_in", float(d.get("usdcValue") or 0)
+            elif t == "send" and str(d.get("user", "")).lower() == address:
+                dest_self = str(d.get("destination", "")).lower() == address
+                if dest_self:
+                    flow_type = "transfer_out" if d.get("destinationDex") == "spot" else "transfer_in"
+                    usdc = float(d.get("usdcValue") or d.get("usdc") or 0)
+            if flow_type is None or usdc is None:
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO hl_flows (hash, time, flow_type, usdc) VALUES (?,?,?,?)",
+                (u["hash"], u["time"], flow_type, usdc),
+            )
+            n_new += cur.rowcount
+        conn.commit()
+        row = conn.execute(
+            """SELECT
+                 SUM(CASE WHEN flow_type IN ('deposit','transfer_in','spot_transfer_in') THEN usdc ELSE 0 END) inflow,
+                 SUM(CASE WHEN flow_type IN ('withdrawal','transfer_out') THEN usdc ELSE 0 END) outflow
+               FROM hl_flows"""
+        ).fetchone()
+        return {
+            "ok": True,
+            "new": n_new,
+            "total_inflow": row["inflow"] or 0.0,
+            "total_outflow": row["outflow"] or 0.0,
+            "net_inflow": (row["inflow"] or 0.0) - (row["outflow"] or 0.0),
+        }
+    finally:
+        conn.close()
+
+
+def _fmt_money(v, signed=False) -> str:
+    """1234.5 -> '1,234.50'（signed=True 时带 +/-）。"""
+    if v is None:
+        return "—"
+    sign = "+" if (signed and v >= 0) else ("-" if v < 0 else "")
+    return f"{sign}{abs(v):,.2f}"
 
 def _orders_with_notes(conn: sqlite3.Connection, limit: int = 500, offset: int = 0):
     rows = conn.execute(
@@ -324,21 +422,48 @@ def _stats(conn: sqlite3.Connection) -> dict:
     n_notes = conn.execute(
         "SELECT COUNT(*) c FROM hl_notes WHERE idea != '' OR review != ''"
     ).fetchone()["c"]
+    flow_row = conn.execute(
+        """SELECT
+             SUM(CASE WHEN flow_type IN ('deposit','transfer_in','spot_transfer_in') THEN usdc ELSE 0 END) inflow,
+             SUM(CASE WHEN flow_type IN ('withdrawal','transfer_out') THEN usdc ELSE 0 END) outflow
+           FROM hl_flows"""
+    ).fetchone()
     stats = dict(agg) if agg else {}
     stats["n_notes"] = n_notes
+    stats["net_inflow"] = (flow_row["inflow"] or 0.0) - (flow_row["outflow"] or 0.0)
+    stats["gross_inflow"] = flow_row["inflow"] or 0.0
+    stats["gross_outflow"] = flow_row["outflow"] or 0.0
+    account = None
+    if acc:
+        pos_blob = json.loads(acc["positions"] or "{}")
+        spot_equity = pos_blob.get("spot_equity")
+        unreal_pnl = acc["unrealized_pnl"] or 0.0
+        total_equity = (acc["account_value"] or 0.0) + (spot_equity or 0.0)
+        account = {
+            "fetched_at": acc["fetched_at"],
+            "account_value": acc["account_value"],
+            "spot_equity": spot_equity,
+            "total_equity": total_equity,
+            "unrealized_pnl": unreal_pnl,
+            "leverage": acc["leverage"],
+            "margin_used": acc["margin_used"],
+            "positions": pos_blob.get("positions", []),
+        }
+        # 全账户口径：总盈亏 = 总权益 - 累计净入金（涵盖 perp 已/未实现 + spot 侧）
+        stats["total_pnl"] = total_equity - stats["net_inflow"]
+        stats["total_pnl_scope"] = "equity"
+    else:
+        stats["total_pnl"] = (stats.get("total_closed_pnl") or 0.0)
+        stats["total_pnl_scope"] = "perp_only"
+    stats["roi_on_inflow"] = (
+        stats["total_pnl"] / stats["net_inflow"] if stats.get("net_inflow") else None
+    )
     stats["winrate"] = (
         stats["wins"] / (stats["wins"] + stats["losses"])
         if stats.get("wins") and (stats["wins"] + stats["losses"]) else None
     )
-    if acc:
-        stats["account"] = {
-            "fetched_at": acc["fetched_at"],
-            "account_value": acc["account_value"],
-            "unrealized_pnl": acc["unrealized_pnl"],
-            "leverage": acc["leverage"],
-            "margin_used": acc["margin_used"],
-            "positions": json.loads(acc["positions"] or "[]"),
-        }
+    if account:
+        stats["account"] = account
     else:
         stats["account"] = None
     return stats
@@ -405,23 +530,31 @@ PAGE = """<!doctype html>
 
 {% if stats.account %}
 <div class="cards">
-  <div class="card"><div class="k">账户净值</div><div class="v">${{ "%.2f"|format(stats.account.account_value) }}</div></div>
+  <div class="card"><div class="k">总权益（perp+spot）</div><div class="v">${{ _money(stats.account.total_equity) }}</div></div>
+  <div class="card"><div class="k">累计入金（净）</div><div class="v">${{ _money(stats.net_inflow) }}</div>
+    <div class="k">流入 ${{ _money(stats.gross_inflow) }} / 流出 ${{ _money(stats.gross_outflow) }}</div></div>
+  <div class="card"><div class="k">总盈亏（权益−入金，全账户）</div>
+    <div class="v {{ 'pos' if stats.total_pnl >= 0 else 'neg' }}">{{ _money(stats.total_pnl, signed=True) }}</div></div>
+  <div class="card"><div class="k">总盈亏 / 累计入金</div>
+    <div class="v {{ 'pos' if stats.total_pnl >= 0 else 'neg' }}">{{ "%.1f%%"|format(stats.roi_on_inflow*100) if stats.roi_on_inflow is not none else "—" }}</div></div>
+  <div class="card"><div class="k">perp 净值</div><div class="v">${{ _money(stats.account.account_value) }}</div>
+    {% if stats.account.spot_equity %}<div class="k">spot 闲钱 ${{ _money(stats.account.spot_equity) }}</div>{% endif %}</div>
   <div class="card"><div class="k">未实现盈亏</div>
-    <div class="v {{ 'pos' if stats.account.unrealized_pnl >= 0 else 'neg' }}">{{ "%+.2f"|format(stats.account.unrealized_pnl) }}</div></div>
+    <div class="v {{ 'pos' if stats.account.unrealized_pnl >= 0 else 'neg' }}">{{ _money(stats.account.unrealized_pnl, signed=True) }}</div></div>
   <div class="card"><div class="k">整体杠杆</div><div class="v">{{ "%.1fx"|format(stats.account.leverage) if stats.account.leverage else "—" }}</div></div>
-  <div class="card"><div class="k">占用保证金</div><div class="v">${{ "%.0f"|format(stats.account.margin_used) }}</div></div>
+  <div class="card"><div class="k">占用保证金</div><div class="v">${{ _money(stats.account.margin_used) }}</div></div>
   <div class="card"><div class="k">已实现盈亏（全部 order）</div>
-    <div class="v {{ 'pos' if stats.total_closed_pnl >= 0 else 'neg' }}">{{ "%+.2f"|format(stats.total_closed_pnl) }}</div></div>
+    <div class="v {{ 'pos' if stats.total_closed_pnl >= 0 else 'neg' }}">{{ _money(stats.total_closed_pnl, signed=True) }}</div></div>
   <div class="card"><div class="k">Order 数 / 胜率</div><div class="v">{{ stats.n_orders }} / {{ "%.0f%%"|format(stats.winrate*100) if stats.winrate is not none else "—" }}</div></div>
-  <div class="card"><div class="k">手续费合计</div><div class="v">${{ "%.2f"|format(stats.total_fees) }}</div></div>
+  <div class="card"><div class="k">手续费合计</div><div class="v">${{ _money(stats.total_fees) }}</div></div>
   <div class="card"><div class="k">已录入想法</div><div class="v">{{ stats.n_notes }} 个 order</div></div>
 </div>
 <div class="sub">快照时间：{{ ts_hkt }} (HKT) · 点击行展开 fills 与想法录入</div>
 
-<h2>当前持仓</h2>
+<h2>当前持仓（按头寸大小）</h2>
 <div class="tbl-wrap"><table class="posdet">
 <tr><th class="l">币种</th><th>方向</th><th>数量</th><th>开仓均价</th><th>标记价</th>
-<th>市值</th><th>未实现盈亏</th><th>ROI</th><th>杠杆</th><th>强平价</th><th>累计资金费</th></tr>
+<th>头寸大小</th><th>保证金</th><th>未实现盈亏</th><th>ROI</th><th>杠杆</th><th>强平价</th><th>累计资金费</th></tr>
 {% for p in stats.account.positions %}
 <tr>
   <td class="l">{{ p.coin }}</td>
@@ -429,12 +562,13 @@ PAGE = """<!doctype html>
   <td>{{ "%.4g"|format(p.szi) }}</td>
   <td>{{ "%.6g"|format(p.entry_px) }}</td>
   <td>{{ "%.6g"|format(p.mark_px) }}</td>
-  <td>${{ "%.0f"|format(p.position_value) }}</td>
-  <td class="{{ 'pos' if p.unrealized_pnl >= 0 else 'neg' }}">{{ "%+.2f"|format(p.unrealized_pnl) }}</td>
+  <td>${{ _money(p.position_value) }}</td>
+  <td>${{ _money(p.margin_used) }}</td>
+  <td class="{{ 'pos' if p.unrealized_pnl >= 0 else 'neg' }}">{{ _money(p.unrealized_pnl, signed=True) }}</td>
   <td>{{ "%.2f%%"|format(p.roi*100) }}</td>
   <td>{{ p.leverage.value }}x{{ " (逐仓)" if p.leverage.type=="isolated" else "" }}</td>
   <td>{{ "%.6g"|format(p.liquidation_px|float) if p.liquidation_px else "—" }}</td>
-  <td>{{ "%+.2f"|format(p.cum_funding) }}</td>
+  <td>{{ _money(p.cum_funding, signed=True) }}</td>
 </tr>
 {% endfor %}
 </table></div>
@@ -442,8 +576,8 @@ PAGE = """<!doctype html>
 
 <h2>Order 历史（{{ stats.n_orders }}）</h2>
 <div class="tbl-wrap"><table id="tbl">
-<tr><th class="l">时间 (UTC)</th><th class="l">币种</th><th class="l">方向</th><th>fills</th>
-<th>净成交量</th><th>均价</th><th>名义金额</th><th>已实现盈亏</th><th>手续费</th><th class="l">标签</th></tr>
+<tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th>fills</th>
+<th>净成交量</th><th>均价</th><th>金额（名义）</th><th>已实现盈亏</th><th>手续费</th><th class="l">标签</th></tr>
 {% for o in orders %}
 <tr class="order-row" data-oid="{{ o.oid }}">
   <td class="l">{{ o.time_str }}</td>
@@ -452,9 +586,9 @@ PAGE = """<!doctype html>
   <td>{{ o.n_fills }}</td>
   <td>{{ "%.6g"|format(o.filled_sz) }}</td>
   <td>{{ "%.6g"|format(o.avg_px) if o.avg_px else "—" }}</td>
-  <td>${{ "%.0f"|format(o.notional_usd) }}</td>
-  <td class="{{ 'pos' if o.closed_pnl >= 0 else 'neg' }}">{{ "%+.2f"|format(o.closed_pnl) }}</td>
-  <td>{{ "%.2f"|format(o.fees) }}</td>
+  <td>${{ _money(o.notional_usd) }}</td>
+  <td class="{{ 'pos' if o.closed_pnl >= 0 else 'neg' }}">{{ _money(o.closed_pnl, signed=True) }}</td>
+  <td>{{ _money(o.fees) }}</td>
   <td class="l">
     {% if o.n_liquidations %}<span class="badge b-liq">清算</span>{% endif %}
     {% if o.idea %}<span class="badge b-has-note">有想法</span>{% endif %}
@@ -511,9 +645,10 @@ function showDetail(oid){
   const first = fills[0] || {};
   document.getElementById('d-title').textContent = `Order ${oid} — ${first.coin||''}`;
   document.getElementById('d-meta').textContent = `${fills.length} 笔成交`;
-  let h = '<tr><th class="l">时间</th><th>价格</th><th>数量</th><th class="l">方向</th><th>已实现盈亏</th><th>手续费</th></tr>';
+  let h = '<tr><th class="l">时间 (HKT)</th><th>价格</th><th>数量</th><th class="l">方向</th><th>金额</th><th>已实现盈亏</th><th>手续费</th></tr>';
   for(const f of fills){
-    h += `<tr><td class="l">${f.time_str}</td><td>${f.px}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>${f.pnl.toFixed(2)}</td><td>${f.fee.toFixed(4)}</td></tr>`;
+    const amt = (f.px*f.sz).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
+    h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td>${f.pnl>=0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
   }
   document.getElementById('d-fills').innerHTML = h;
   document.getElementById('d-idea').value = first.idea || '';
@@ -564,6 +699,8 @@ def trading_page():
         _init_db(conn)
         orders, total = _orders_with_notes(conn)
         stats = _stats(conn)
+        if stats.get("account") and stats["account"].get("positions"):
+            stats["account"]["positions"].sort(key=lambda p: p["position_value"], reverse=True)
         orders = [dict(o) for o in orders]
         for o in orders:
             o["time_str"] = _ts(o["opened_at"])
@@ -585,8 +722,9 @@ def trading_page():
             address=_html.escape(address),
             orders=orders,
             stats=stats,
+            _money=_fmt_money,
             oid_fills_json=json.dumps(oid_fills, ensure_ascii=False),
-            ts_hkt=datetime.fromtimestamp(stats["account"]["fetched_at"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if stats.get("account") else "",
+            ts_hkt=datetime.fromtimestamp(stats["account"]["fetched_at"] / 1000, tz=HKT).strftime("%Y-%m-%d %H:%M") if stats.get("account") else "",
         )
     finally:
         conn.close()
@@ -643,5 +781,7 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
     if cmd in ("sync", "all"):
         print("sync:", json.dumps(sync_fills()))
+    if cmd in ("flows", "all"):
+        print("flows:", json.dumps(sync_flows()))
     if cmd in ("refresh", "all"):
         print("refresh:", json.dumps(refresh_prices()))
