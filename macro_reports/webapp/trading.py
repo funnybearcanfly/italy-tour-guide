@@ -83,7 +83,12 @@ def _order_leverage(coin: str, opened_at_ms: int, conn: sqlite3.Connection) -> f
     ).fetchone()
     if row:
         return row["lev"]
-    return _get_lev_maps()[1].get(coin)
+    lev = _get_lev_maps()[1].get(coin)
+    # xyz（HIP-3 股票 perps）growthMode 下 API 的 maxLeverage 是 UI 显示的 2 倍
+    # （保证金减半），UI 口径上限 10x——回退值按 UI 口径封顶
+    if coin.startswith("xyz:") and lev and lev > 10:
+        lev = 10
+    return lev
 
 
 # ---------------------------------------------------------------- helpers
