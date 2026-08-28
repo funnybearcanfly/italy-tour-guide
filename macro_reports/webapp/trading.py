@@ -827,7 +827,7 @@ function showDetail(oid, row){
   for(const f of fills){
     const amt = (f.px*f.sz).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
     totAmt += f.px*f.sz;
-    h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td>${f.pnl>0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
+    h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td class="${f.pnl>0?'pos':(f.pnl<0?'neg':'')}">${f.pnl>0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
   }
   h += `<tr><td class="l" style="color:#8b949e">合计名义</td><td colspan="3"></td><td style="color:#8b949e">$${totAmt.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td colspan="2"></td></tr>`;
   document.getElementById('d-fills').innerHTML = h;
