@@ -208,46 +208,65 @@ def sync_fills(address: str | None = None) -> dict:
 
 
 def refresh_prices(address: str | None = None) -> dict:
-    """拉账户状态 + 全市场标记价，更新持仓未实现盈亏与整体杠杆。"""
+    """拉账户状态 + 全市场标记价，更新持仓未实现盈亏与整体杠杆。
+
+    仓位可能分散在主 dex 和任意 HIP-3 builder dex（如 xyz），必须全部遍历。
+    """
     address = address or DEFAULT_ADDRESS
-    state = _hl_post({"type": "clearinghouseState", "user": address})
-    meta = _hl_post({"type": "metaAndAssetCtxs", "user": address})
-    marks = {}
+    dex_names = [None]  # None = 主 dex
     try:
-        universe, ctxs = meta[0]["universe"], meta[1]
-        for name, ctx in zip([u["name"] for u in universe], ctxs):
-            if ctx.get("markPx"):
-                marks[name] = float(ctx["markPx"])
-    except (KeyError, IndexError, TypeError):
+        for d in _hl_post({"type": "perpDexs"}):
+            if d and d.get("name"):
+                dex_names.append(d["name"])
+    except Exception:
         pass
 
     positions = []
-    for ap in state.get("assetPositions", []):
-        p = ap.get("position", {})
-        szi = float(p.get("szi") or 0)
-        if szi == 0:
-            continue
-        coin = p["coin"]
-        mark = marks.get(coin) or float(p.get("entryPx") or 0)
-        pos_val = abs(szi) * mark
-        positions.append({
-            "coin": coin,
-            "szi": szi,
-            "entry_px": float(p.get("entryPx") or 0),
-            "mark_px": mark,
-            "position_value": pos_val,
-            "unrealized_pnl": float(p.get("unrealizedPnl") or 0),
-            "leverage": p.get("leverage", {}),
-            "margin_used": float(p.get("marginUsed") or 0),
-            "liquidation_px": p.get("liquidationPx"),
-            "roi": float(p.get("returnOnEquity") or 0),
-            "cum_funding": float((p.get("cumFunding") or {}).get("allTime") or 0),
-        })
+    total_ntl = 0.0
+    margin_used = 0.0
+    account_value = 0.0
+    for dex in dex_names:
+        payload = {"type": "clearinghouseState", "user": address}
+        if dex:
+            payload["dex"] = dex
+        state = _hl_post(payload)
+        try:
+            meta = _hl_post({"type": "metaAndAssetCtxs"} if not dex
+                            else {"type": "metaAndAssetCtxs", "dex": dex})
+            universe, ctxs = meta[0]["universe"], meta[1]
+            marks = {}
+            for name, ctx in zip([u["name"] for u in universe], ctxs):
+                if ctx.get("markPx"):
+                    marks[name] = float(ctx["markPx"])
+        except (KeyError, IndexError, TypeError):
+            marks = {}
 
-    ms = state.get("marginSummary", {})
-    account_value = float(ms.get("accountValue") or 0)
-    total_ntl = float(ms.get("totalNtlPos") or 0)
-    margin_used = float(ms.get("totalMarginUsed") or 0)
+        for ap in state.get("assetPositions", []):
+            p = ap.get("position", {})
+            szi = float(p.get("szi") or 0)
+            if szi == 0:
+                continue
+            coin = p["coin"]
+            mark = marks.get(coin) or float(p.get("entryPx") or 0)
+            pos_val = abs(szi) * mark
+            positions.append({
+                "coin": coin,
+                "szi": szi,
+                "entry_px": float(p.get("entryPx") or 0),
+                "mark_px": mark,
+                "position_value": pos_val,
+                "unrealized_pnl": float(p.get("unrealizedPnl") or 0),
+                "leverage": p.get("leverage", {}),
+                "margin_used": float(p.get("marginUsed") or 0),
+                "liquidation_px": p.get("liquidationPx"),
+                "roi": float(p.get("returnOnEquity") or 0),
+                "cum_funding": float((p.get("cumFunding") or {}).get("allTime") or 0),
+            })
+
+        ms = state.get("marginSummary", {})
+        account_value += float(ms.get("accountValue") or 0)
+        total_ntl += float(ms.get("totalNtlPos") or 0)
+        margin_used += float(ms.get("totalMarginUsed") or 0)
     unreal = sum(p["unrealized_pnl"] for p in positions)
 
     conn = _db()
