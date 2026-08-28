@@ -467,7 +467,7 @@ def _fmt_money(v, signed=False) -> str:
     """1234.5 -> '1,234.50'（signed=True 时带 +/-）。"""
     if v is None:
         return "—"
-    sign = "+" if (signed and v >= 0) else ("-" if v < 0 else "")
+    sign = "+" if (signed and v > 0) else ("-" if v < 0 else "")
     return f"{sign}{abs(v):,.2f}"
 
 def _orders_with_notes(conn: sqlite3.Connection, limit: int = 500, offset: int = 0):
@@ -577,7 +577,13 @@ PAGE = """<!doctype html>
   .b-close { background:#8b949e33; color:#8b949e; }
   .b-liq { background:#f8514933; color:#f85149; }
   .b-has-note { background:#23863633; color:#3fb950; }
-  #detail { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:14px; margin-top:12px; display:none; }
+  #overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); display:none; z-index:100; }
+  #detail { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+            background:#161b22; border:1px solid #30363d; border-radius:10px;
+            padding:16px; width:min(760px, 94vw); max-height:88vh; overflow-y:auto;
+            display:none; z-index:101; box-shadow:0 8px 30px rgba(0,0,0,0.5); }
+  #detail .close-x { float:right; cursor:pointer; color:#8b949e; font-size:18px; line-height:1; padding:2px 6px; }
+  #detail .close-x:hover { color:#e6edf3; }
   textarea { width:100%; background:#0d1117; color:#e6edf3; border:1px solid #30363d;
              border-radius:6px; padding:8px; font-size:13px; min-height:70px; resize:vertical;
              font-family:inherit; }
@@ -628,7 +634,7 @@ PAGE = """<!doctype html>
 <th>头寸大小</th><th>保证金</th><th>未实现盈亏</th><th>ROI</th><th>杠杆</th><th>强平价</th><th>累计资金费</th></tr>
 {% for p in stats.account.positions %}
 <tr>
-  <td class="l">{{ p.coin }}</td>
+  <td class="l">{{ p.coin|replace("xyz:", "") }}</td>
   <td>{{ "多" if p.szi > 0 else "空" }}</td>
   <td>{{ "%.4g"|format(p.szi) }}</td>
   <td>{{ "%.6g"|format(p.entry_px) }}</td>
@@ -652,7 +658,7 @@ PAGE = """<!doctype html>
 {% for o in orders %}
 <tr class="order-row" data-oid="{{ o.oid }}">
   <td class="l">{{ o.time_str }}</td>
-  <td class="l">{{ o.coin }}</td>
+  <td class="l">{{ o.coin|replace("xyz:", "") }}</td>
   <td class="l">{{ o.side_str }}</td>
   <td>{{ o.n_fills }}</td>
   <td>{{ "%.6g"|format(o.filled_sz) }}</td>
@@ -671,7 +677,9 @@ PAGE = """<!doctype html>
 {% endfor %}
 </table></div>
 
+<div id="overlay" onclick="closeDetail()"></div>
 <div id="detail">
+  <span class="close-x" onclick="closeDetail()">✕</span>
   <div><b id="d-title"></b> <span id="d-meta" class="muted"></span></div>
   <div class="tbl-wrap"><table class="posdet" id="d-fills" style="margin-top:8px"></table></div>
   <div class="lbl">💡 交易想法（下单当时）</div>
@@ -680,7 +688,7 @@ PAGE = """<!doctype html>
   <textarea id="d-review"></textarea>
   <div style="margin-top:10px">
     <button class="btn primary" onclick="saveNote()">保存</button>
-    <button class="btn" onclick="document.getElementById('detail').style.display='none'">关闭</button>
+    <button class="btn" onclick="closeDetail()">关闭</button>
     <span id="d-msg" class="muted"></span>
   </div>
 </div>
@@ -716,23 +724,26 @@ function showDetail(oid){
   curOid = oid;
   const fills = oidFills[oid] || [];
   const first = fills[0] || {};
-  document.getElementById('d-title').textContent = `Order ${oid} — ${first.coin||''}`;
+  document.getElementById('d-title').textContent = `Order ${oid} — ${(first.coin||'').replace('xyz:','')}`;
   document.getElementById('d-meta').textContent = `${fills.length} 笔成交`;
   let h = '<tr><th class="l">时间 (HKT)</th><th>价格</th><th>数量</th><th class="l">方向</th><th>金额</th><th>已实现盈亏</th><th>手续费</th></tr>';
   let totAmt = 0;
   for(const f of fills){
     const amt = (f.px*f.sz).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
     totAmt += f.px*f.sz;
-    h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td>${f.pnl>=0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
+    h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td>${f.pnl>0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
   }
   h += `<tr><td class="l" style="color:#8b949e">合计名义</td><td colspan="3"></td><td style="color:#8b949e">$${totAmt.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td colspan="2"></td></tr>`;
   document.getElementById('d-fills').innerHTML = h;
   document.getElementById('d-idea').value = first.idea || '';
   document.getElementById('d-review').value = first.review || '';
   document.getElementById('d-msg').textContent = '';
-  const d = document.getElementById('detail');
-  d.style.display = 'block';
-  d.scrollIntoView({behavior:'smooth', block:'nearest'});
+  document.getElementById('overlay').style.display = 'block';
+  document.getElementById('detail').style.display = 'block';
+}
+function closeDetail(){
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('detail').style.display = 'none';
 }
 document.querySelectorAll('.order-row').forEach(tr => tr.addEventListener('click', () => showDetail(+tr.dataset.oid)));
 async function saveNote(){
