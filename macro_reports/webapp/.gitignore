@@ -1,1 +1,2 @@
-.secret_key
+data/*.db*
+__pycache__/
