@@ -17,6 +17,7 @@ SQLite 表：
 import json
 import os
 import sqlite3
+import subprocess
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ HL_API = "https://api.hyperliquid.xyz/info"
 DEFAULT_ADDRESS = "0x882b51825750a0D5A0B2cE2CA410Ad27C6ebD4b5"
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 DB_PATH = os.path.join(DATA_DIR, "trading.db")
+# 想法/复盘持久化到 git 跟踪的 JSON，保存时自动 commit+push，避免 DB 丢失
+NOTES_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trade_notes.json")
 
 bp = Blueprint("trading", __name__)
 
@@ -572,6 +575,8 @@ PAGE = """<!doctype html>
   th { color:#8b949e; font-weight:500; position:sticky; top:0; background:#0d1117; }
   td.l, th.l { text-align:left; }
   tr.order-row:hover { background:#161b22; cursor:pointer; }
+  .long { color:#3fb950; font-weight:600; }
+  .short { color:#f85149; font-weight:600; }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; }
   .b-open { background:#1f6feb33; color:#58a6ff; }
   .b-close { background:#8b949e33; color:#8b949e; }
@@ -635,7 +640,7 @@ PAGE = """<!doctype html>
 {% for p in stats.account.positions %}
 <tr>
   <td class="l">{{ p.coin|replace("xyz:", "") }}</td>
-  <td>{{ "多" if p.szi > 0 else "空" }}</td>
+  <td class="{{ 'long' if p.szi > 0 else 'short' }}">{{ "多" if p.szi > 0 else "空" }}</td>
   <td>{{ "%.4g"|format(p.szi) }}</td>
   <td>{{ "%.6g"|format(p.entry_px) }}</td>
   <td>{{ "%.6g"|format(p.mark_px) }}</td>
@@ -659,7 +664,7 @@ PAGE = """<!doctype html>
 <tr class="order-row" data-oid="{{ o.oid }}">
   <td class="l">{{ o.time_str }}</td>
   <td class="l">{{ o.coin|replace("xyz:", "") }}</td>
-  <td class="l">{{ o.side_str }}</td>
+  <td class="l {{ o.side_cls }}">{{ o.side_str }}</td>
   <td>{{ o.n_fills }}</td>
   <td>{{ "%.6g"|format(o.filled_sz) }}</td>
   <td>{{ "%.6g"|format(o.avg_px) if o.avg_px else "—" }}</td>
@@ -792,6 +797,13 @@ def trading_page():
         for o in orders:
             o["time_str"] = _ts(o["opened_at"])
             o["side_str"] = _fmt_side(o)
+            raw = o["side"] or ""
+            if raw.startswith("Open Long") or "Short > Long" in raw:
+                o["side_cls"] = "long"
+            elif raw.startswith("Open Short") or "Long > Short" in raw:
+                o["side_cls"] = "short"
+            else:
+                o["side_cls"] = ""
         oid_fills = {}
         for o in orders:
             fills = conn.execute(
@@ -837,6 +849,34 @@ def refresh():
         return jsonify({"error": str(e)}), 502
 
 
+def _export_notes_to_github() -> bool:
+    """把 hl_notes 导出到 git 跟踪的 trade_notes.json 并 commit+push（失败不影响保存）。"""
+    try:
+        conn = _db()
+        try:
+            rows = conn.execute(
+                "SELECT oid, idea, review, updated_at FROM hl_notes WHERE idea != '' OR review != ''"
+            ).fetchall()
+        finally:
+            conn.close()
+        blob = {
+            str(r["oid"]): {"idea": r["idea"], "review": r["review"], "updated_at": r["updated_at"]}
+            for r in rows
+        }
+        with open(NOTES_JSON, "w") as f:
+            json.dump(blob, f, ensure_ascii=False, indent=2)
+        repo_dir = os.path.dirname(os.path.dirname(os.path.dirname(NOTES_JSON)))
+        subprocess.run(["git", "add", os.path.relpath(NOTES_JSON, repo_dir)],
+                       cwd=repo_dir, timeout=10, capture_output=True)
+        r1 = subprocess.run(["git", "commit", "-m", "notes: trade ideas/reviews update"],
+                            cwd=repo_dir, timeout=15, capture_output=True)
+        if r1.returncode == 0:
+            subprocess.run(["git", "push", "-q"], cwd=repo_dir, timeout=30, capture_output=True)
+        return True
+    except Exception:
+        return False
+
+
 @bp.route("/trading/api/note", methods=["POST"])
 def save_note():
     if "user" not in session:
@@ -856,9 +896,10 @@ def save_note():
              int(time.time() * 1000)),
         )
         conn.commit()
-        return jsonify({"ok": True})
     finally:
         conn.close()
+    ok_git = _export_notes_to_github()
+    return jsonify({"ok": True, "synced_to_github": ok_git})
 
 
 # ---------------------------------------------------------------- CLI（cron 用，无 LLM）
