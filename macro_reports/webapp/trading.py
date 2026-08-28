@@ -482,15 +482,26 @@ PAGE = """<!doctype html>
 const oidFills = {{ oid_fills_json | safe }};
 let curOid = null;
 
+async function postJson(url){
+  try {
+    const r = await fetch(url, {method:'POST'});
+    const t = await r.text();
+    try { return JSON.parse(t); }
+    catch(e){
+      if (r.status === 401) { location.href = '/login'; return {error:'请先登录'}; }
+      return {error: `HTTP ${r.status} — 服务可能正在重启，请稍候重试`};
+    }
+  } catch(e) { return {error: '网络错误 — 服务可能正在重启，请稍候重试'}; }
+}
 async function doSync(){
   const m = document.getElementById('msg'); m.textContent = '同步中…';
-  const r = await fetch('{{ url_for("trading.sync") }}').then(r=>r.json()).catch(e=>({error:String(e)}));
+  const r = await postJson('{{ url_for("trading.sync") }}');
   m.textContent = r.ok ? `新增 ${r.new_fills} 笔成交 / ${r.touched_orders} 个 order` : ('失败: '+r.error);
   if(r.ok) setTimeout(()=>location.reload(), 800);
 }
 async function doRefresh(){
   const m = document.getElementById('msg'); m.textContent = '刷新价格中…';
-  const r = await fetch('{{ url_for("trading.refresh") }}').then(r=>r.json()).catch(e=>({error:String(e)}));
+  const r = await postJson('{{ url_for("trading.refresh") }}');
   m.textContent = r.ok ? `净值 $${r.account_value.toFixed(2)} · 未实现 ${r.unrealized_pnl.toFixed(2)} · ${r.n_positions} 个持仓` : ('失败: '+r.error);
   if(r.ok) setTimeout(()=>location.reload(), 800);
 }
