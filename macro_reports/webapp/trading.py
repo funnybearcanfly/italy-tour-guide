@@ -968,7 +968,13 @@ def sync():
     if "user" not in session:
         return jsonify({"error": "unauthorized"}), 401
     try:
-        return jsonify(sync_fills(_address()))
+        out = sync_fills(_address())
+        # 同步成交后顺带刷新持仓：平仓/开仓后点同步即可看到最新仓位
+        try:
+            out["refresh"] = refresh_prices(_address())
+        except Exception:
+            pass
+        return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
