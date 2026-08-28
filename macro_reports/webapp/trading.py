@@ -663,6 +663,9 @@ PAGE = """<!doctype html>
   th { color:#8b949e; font-weight:500; position:sticky; top:0; background:#0d1117; }
   td.l, th.l { text-align:left; }
   tr.order-row:hover { background:#161b22; cursor:pointer; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:#58a6ff; }
+  th.sortable .arr { font-size:10px; opacity:.7; }
   .long { color:#3fb950; font-weight:600; }
   .short { color:#f85149; font-weight:600; }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; }
@@ -746,10 +749,10 @@ PAGE = """<!doctype html>
 
 <h2>Order 历史（{{ stats.n_orders }}）</h2>
 <div class="tbl-wrap"><table id="tbl">
-<tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th>fills</th>
-<th>净成交量</th><th>均价</th><th>金额（名义）</th><th>杠杆</th><th>保证金成本</th><th>已实现盈亏</th><th>手续费</th><th class="l">标签</th></tr>
+<tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th class="sortable" onclick="sortTbl(this,2)">fills ▾</th>
+<th class="sortable" onclick="sortTbl(this,3)">净成交量</th><th class="sortable" onclick="sortTbl(this,4)">均价</th><th class="sortable" onclick="sortTbl(this,5)">金额（名义）</th><th class="sortable" onclick="sortTbl(this,6)">杠杆</th><th class="sortable" onclick="sortTbl(this,7)">保证金成本</th><th class="sortable" onclick="sortTbl(this,8)">已实现盈亏</th><th class="sortable" onclick="sortTbl(this,9)">手续费</th><th class="l">标签</th></tr>
 {% for o in orders %}
-<tr class="order-row" data-oid="{{ o.oid }}">
+<tr class="order-row" data-oid="{{ o.oid }}" {% if o.n_liquidations %}data-liq="1"{% endif %}>
   <td class="l">{{ o.time_str }}</td>
   <td class="l">{{ o.coin|replace("xyz:", "") }}</td>
   <td class="l {{ o.side_cls }}">{{ o.side_str }}</td>
@@ -774,7 +777,6 @@ PAGE = """<!doctype html>
 <div id="detail">
   <span class="close-x" onclick="closeDetail()">✕</span>
   <div><b id="d-title"></b> <span id="d-meta" class="muted"></span></div>
-  <div class="tbl-wrap"><table class="posdet" id="d-fills" style="margin-top:8px"></table></div>
   <div class="lbl">💡 交易想法（下单当时）</div>
   <textarea id="d-idea"></textarea>
   <div class="lbl">📝 事后复盘</div>
@@ -784,6 +786,7 @@ PAGE = """<!doctype html>
     <button class="btn" onclick="closeDetail()">关闭</button>
     <span id="d-msg" class="muted"></span>
   </div>
+  <div class="tbl-wrap" style="margin-top:12px"><table class="posdet" id="d-fills"></table></div>
 </div>
 
 <script>
@@ -813,7 +816,7 @@ async function doRefresh(){
   m.textContent = r.ok ? `净值 $${r.account_value.toFixed(2)} · 未实现 ${r.unrealized_pnl.toFixed(2)} · ${r.n_positions} 个持仓` : ('失败: '+r.error);
   if(r.ok) setTimeout(()=>location.reload(), 800);
 }
-function showDetail(oid){
+function showDetail(oid, row){
   curOid = oid;
   const fills = oidFills[oid] || [];
   const first = fills[0] || {};
@@ -828,17 +831,34 @@ function showDetail(oid){
   }
   h += `<tr><td class="l" style="color:#8b949e">合计名义</td><td colspan="3"></td><td style="color:#8b949e">$${totAmt.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td colspan="2"></td></tr>`;
   document.getElementById('d-fills').innerHTML = h;
-  document.getElementById('d-idea').value = first.idea || '';
+  const isLiq = !!row.dataset.liq;
+  document.getElementById('d-idea').style.display = isLiq ? 'none' : '';
+  document.getElementById('d-idea').previousElementSibling.style.display = isLiq ? 'none' : '';
+  document.getElementById('d-idea').value = isLiq ? '（清算单，强制触发）' : (first.idea || '');
   document.getElementById('d-review').value = first.review || '';
   document.getElementById('d-msg').textContent = '';
   document.getElementById('overlay').style.display = 'block';
   document.getElementById('detail').style.display = 'block';
 }
+let sortDir = {};
+function sortTbl(th, col){
+  const tbl = document.getElementById('tbl');
+  const rows = [...tbl.rows].filter(r => r.dataset.oid);
+  const dir = sortDir[col] = !(sortDir[col] || false);
+  rows.sort((a,b) => {
+    const x = parseFloat(a.cells[col].textContent.replace(/[$,+%]/g,'')) || 0;
+    const y = parseFloat(b.cells[col].textContent.replace(/[$,+%]/g,'')) || 0;
+    return dir ? x - y : y - x;
+  });
+  rows.forEach(r => tbl.appendChild(r));
+  [...tbl.rows[0].cells].forEach(c => { if(c.classList.contains('sortable')) c.textContent = c.textContent.replace(/ [▾▴]$/,''); });
+  th.textContent = th.textContent.replace(/ [▾▴]$/,'') + (dir ? ' ▴' : ' ▾');
+}
 function closeDetail(){
   document.getElementById('overlay').style.display = 'none';
   document.getElementById('detail').style.display = 'none';
 }
-document.querySelectorAll('.order-row').forEach(tr => tr.addEventListener('click', () => showDetail(+tr.dataset.oid)));
+document.querySelectorAll('.order-row').forEach(tr => tr.addEventListener('click', () => showDetail(+tr.dataset.oid, tr)));
 async function saveNote(){
   if(curOid==null) return;
   const m = document.getElementById('d-msg'); m.textContent = '保存中…';
