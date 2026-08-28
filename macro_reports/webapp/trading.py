@@ -1012,6 +1012,32 @@ def _export_notes_to_github() -> bool:
                             cwd=repo_dir, timeout=15, capture_output=True)
         if r1.returncode == 0:
             subprocess.run(["git", "push", "-q"], cwd=repo_dir, timeout=30, capture_output=True)
+        # 双写备份仓库（git@github.com:funnybearcanfly/smart-melon-hermes-backup，main 分支）
+        # 失败不影响保存——notes 已在 SQLite + 主 repo 两处持久化
+        try:
+            backup_dir = "/tmp/hl-notes-backup"
+            env = dict(os.environ, GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new")
+            if not os.path.isdir(os.path.join(backup_dir, ".git")):
+                subprocess.run(["git", "clone", "--depth", "1", "-q",
+                                "git@github.com:funnybearcanfly/smart-melon-hermes-backup.git",
+                                backup_dir], timeout=60, capture_output=True, env=env)
+            if os.path.isdir(os.path.join(backup_dir, ".git")):
+                subprocess.run(["git", "checkout", "main", "-q"], cwd=backup_dir,
+                               timeout=15, capture_output=True, env=env)
+                subprocess.run(["git", "pull", "--ff-only", "-q"], cwd=backup_dir,
+                               timeout=30, capture_output=True, env=env)
+                dst = os.path.join(backup_dir, "projects", "macro_reports", "trade_notes.json")
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                subprocess.run(["cp", NOTES_JSON, dst], timeout=10, capture_output=True)
+                subprocess.run(["git", "add", "projects/macro_reports/trade_notes.json"],
+                               cwd=backup_dir, timeout=10, capture_output=True, env=env)
+                r2 = subprocess.run(["git", "commit", "-m", "notes: trade ideas/reviews update"],
+                                    cwd=backup_dir, timeout=15, capture_output=True, env=env)
+                if r2.returncode == 0:
+                    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=backup_dir,
+                                   timeout=30, capture_output=True, env=env)
+        except Exception:
+            pass
         return True
     except Exception:
         return False
