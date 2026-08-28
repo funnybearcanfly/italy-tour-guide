@@ -166,7 +166,8 @@ CREATE TABLE IF NOT EXISTS hl_orders (
   fees REAL NOT NULL DEFAULT 0,
   n_liquidations INTEGER NOT NULL DEFAULT 0,
   est_leverage REAL,             -- 名义 / 最低要求保证金（基于 maxLeverage）
-  est_margin_used REAL           -- 估算保证金占用（名义 / maxLeverage）
+  est_margin_used REAL,          -- 估算保证金占用（名义 / maxLeverage）
+  lev_override REAL              -- 用户手动修正的杠杆（优先于估算）
 );
 CREATE INDEX IF NOT EXISTS idx_orders_time ON hl_orders(opened_at);
 CREATE TABLE IF NOT EXISTS hl_lev_history (
@@ -205,6 +206,10 @@ CREATE TABLE IF NOT EXISTS hl_flows (
 
 def _init_db(conn: sqlite3.Connection):
     conn.executescript(SCHEMA)
+    try:
+        conn.execute("ALTER TABLE hl_orders ADD COLUMN lev_override REAL")
+    except sqlite3.OperationalError:
+        pass  # 已存在
 
 
 # ---------------------------------------------------------------- sync
@@ -232,6 +237,9 @@ def _rebuild_order(conn: sqlite3.Connection, oid: int):
     coin = _spot_name(raw_coin)  # '@107' -> 代币名；perp 原样
     # 杠杆：开仓时点的实际杠杆（hl_lev_history 快照），spot 交易无杠杆
     lev = None if raw_coin.startswith("@") else _order_leverage(raw_coin, fills[0]["time"], conn)
+    ov = conn.execute("SELECT lev_override FROM hl_orders WHERE oid=?", (oid,)).fetchone()
+    if ov and ov["lev_override"]:
+        lev = ov["lev_override"]
     if lev and notional:
         est_margin = notional / lev
         est_leverage = float(lev)
@@ -782,6 +790,10 @@ PAGE = """<!doctype html>
 <div id="detail">
   <span class="close-x" onclick="closeDetail()">✕</span>
   <div><b id="d-title"></b> <span id="d-meta" class="muted"></span></div>
+  <div style="margin:6px 0"><span class="lbl" style="display:inline">杠杆倍数</span>
+    <input id="d-lev" type="number" step="any" min="1" style="width:80px" />
+    <button class="btn" style="padding:2px 10px" onclick="saveLev()">修正杠杆</button>
+    <span id="d-lev-msg" class="muted"></span></div>
   <div class="lbl">💡 交易想法（下单当时）</div>
   <textarea id="d-idea"></textarea>
   <div class="lbl">📝 事后复盘</div>
@@ -823,6 +835,9 @@ async function doRefresh(){
 }
 function showDetail(oid, row){
   curOid = oid;
+  const curLev = row ? row.cells[7].textContent.trim().replace('x','') : '';
+  document.getElementById('d-lev').value = curLev;
+  document.getElementById('d-lev-msg').textContent = '';
   const fills = oidFills[oid] || [];
   const first = fills[0] || {};
   document.getElementById('d-title').textContent = `Order ${oid} — ${(first.coin||'').replace('xyz:','')}`;
@@ -864,6 +879,12 @@ function closeDetail(){
   document.getElementById('detail').style.display = 'none';
 }
 document.querySelectorAll('.order-row').forEach(tr => tr.addEventListener('click', () => showDetail(+tr.dataset.oid, tr)));
+async function saveLev(){
+  const m = document.getElementById('d-lev-msg');
+  const r = await postJson('{{ url_for("trading.set_leverage") }}', {oid: curOid, lev: parseFloat(document.getElementById('d-lev').value)});
+  if (r.ok) { m.textContent = '✓ 已更新'; setTimeout(()=>location.reload(), 600); }
+  else m.textContent = '失败: ' + (r.error || r.msg || '未知');
+}
 async function saveNote(){
   if(curOid==null) return;
   const m = document.getElementById('d-msg'); m.textContent = '保存中…';
@@ -988,6 +1009,33 @@ def _export_notes_to_github() -> bool:
         return True
     except Exception:
         return False
+
+
+@bp.route("/trading/api/lev", methods=["POST"])
+def set_leverage():
+    """手动修正某 order 的杠杆（API 无历史杠杆，估算可能有误）。"""
+    if "user" not in session:
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    oid = data.get("oid")
+    lev = data.get("lev")
+    if oid is None:
+        return jsonify({"error": "oid required"}), 400
+    try:
+        lev = float(lev) if lev not in (None, "") else None
+    except (TypeError, ValueError):
+        return jsonify({"error": "bad lev"}), 400
+    conn = _db()
+    try:
+        _init_db(conn)
+        conn.execute("UPDATE hl_orders SET lev_override=? WHERE oid=?", (lev, int(oid)))
+        conn.commit()
+        _rebuild_order(conn, int(oid))
+        conn.commit()
+        row = conn.execute("SELECT est_leverage, est_margin_used FROM hl_orders WHERE oid=?", (int(oid),)).fetchone()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "est_leverage": row["est_leverage"], "est_margin_used": row["est_margin_used"]})
 
 
 @bp.route("/trading/api/note", methods=["POST"])
