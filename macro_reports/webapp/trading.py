@@ -30,6 +30,15 @@ DB_PATH = os.path.join(DATA_DIR, "trading.db")
 
 bp = Blueprint("trading", __name__)
 
+_LEV_MAP: dict = {}  # 币种 -> maxLeverage，首次 sync 时加载
+
+
+def _get_lev_map() -> dict:
+    global _LEV_MAP
+    if not _LEV_MAP:
+        _LEV_MAP = _lev_map()
+    return _LEV_MAP
+
 
 # ---------------------------------------------------------------- helpers
 
@@ -104,7 +113,9 @@ CREATE TABLE IF NOT EXISTS hl_orders (
   avg_px REAL,                   -- 成交均价
   closed_pnl REAL NOT NULL DEFAULT 0,
   fees REAL NOT NULL DEFAULT 0,
-  n_liquidations INTEGER NOT NULL DEFAULT 0
+  n_liquidations INTEGER NOT NULL DEFAULT 0,
+  est_leverage REAL,             -- 名义 / 最低要求保证金（基于 maxLeverage）
+  est_margin_used REAL           -- 估算保证金占用（名义 / maxLeverage）
 );
 CREATE INDEX IF NOT EXISTS idx_orders_time ON hl_orders(opened_at);
 
@@ -159,35 +170,58 @@ def _rebuild_order(conn: sqlite3.Connection, oid: int):
         closed_pnl += f["closed_pnl"]
         fees += f["fee"]
         liqs += 1 if f["liquidation"] else 0
+    avg_px = abs(notional / signed) if signed else None
+    # 保证金视角：按 maxLeverage 开满所需最低保证金；est_leverage = 名义/最低保证金
+    max_lev = _LEV_MAP.get(fills[0]["coin"])
+    if max_lev and notional:
+        est_margin = notional / max_lev
+        est_leverage = float(max_lev)
+    else:
+        est_margin = notional  # 保守：无杠杆数据时按 1x 计
+        est_leverage = 1.0
     conn.execute(
         """INSERT INTO hl_orders (oid, coin, side, opened_at, last_fill_at, n_fills,
-               filled_sz, notional_usd, avg_px, closed_pnl, fees, n_liquidations)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               filled_sz, notional_usd, avg_px, closed_pnl, fees, n_liquidations,
+               est_leverage, est_margin_used)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(oid) DO UPDATE SET
              coin=excluded.coin, side=excluded.side, opened_at=excluded.opened_at,
              last_fill_at=excluded.last_fill_at, n_fills=excluded.n_fills,
              filled_sz=excluded.filled_sz, notional_usd=excluded.notional_usd,
              avg_px=excluded.avg_px, closed_pnl=excluded.closed_pnl, fees=excluded.fees,
-             n_liquidations=excluded.n_liquidations""",
+             n_liquidations=excluded.n_liquidations,
+             est_leverage=excluded.est_leverage, est_margin_used=excluded.est_margin_used""",
         (
             oid, fills[0]["coin"], fills[0]["dir"], fills[0]["time"], fills[-1]["time"],
-            len(fills), signed, notional,
-            abs(notional / signed) if signed else None,
-            closed_pnl, fees, liqs,
+            len(fills), signed, notional, avg_px,
+            closed_pnl, fees, liqs, est_leverage, est_margin,
         ),
     )
 
 
 def sync_fills(address: str | None = None) -> dict:
-    """增量拉取 userFills，按 tid 去重入库，重建受影响 order 的聚合。"""
-    address = address or DEFAULT_ADDRESS
-    resp = _hl_post({"type": "userFills", "user": address})
+    """增量拉取全部历史 fills（自动翻页，API 单次 2000 条封顶），按 tid 去重入库。"""
+    address = (address or DEFAULT_ADDRESS).lower()
     conn = _db()
     try:
         _init_db(conn)
+        _get_lev_map()
+        # 总是从 0 开始翻页：增量成本只有 2 次请求，但从 DB 最小时间起会漏掉更早的历史
+        all_fills = []
+        cursor = 0
+        while True:
+            payload = {"type": "userFillsByTime", "user": address, "startTime": cursor}
+            batch = _hl_post(payload)
+            if not batch:
+                break
+            all_fills.extend(batch)
+            if len(batch) < 2000:
+                break
+            cursor = max(f["time"] for f in batch) + 1
+            time.sleep(0.3)
         new_tids = 0
         touched_oids = set()
-        for f in resp:
+        for f in all_fills:
             cur = conn.execute(
                 """INSERT OR IGNORE INTO hl_fills
                    (tid, oid, coin, px, sz, side, dir, time, closed_pnl, fee, fee_token,
@@ -209,7 +243,7 @@ def sync_fills(address: str | None = None) -> dict:
         conn.commit()
         return {
             "ok": True,
-            "fetched": len(resp),
+            "fetched": len(all_fills),
             "new_fills": new_tids,
             "touched_orders": len(touched_oids),
         }
@@ -334,6 +368,34 @@ def refresh_prices(address: str | None = None) -> dict:
         "n_positions": len(positions),
         "fetched_at": int(time.time() * 1000),
     }
+
+
+def _lev_map() -> dict:
+    """各币种最大杠杆缓存（meta.maxLeverage，主 dex + 全部 HIP-3 dex），7 天过期。"""
+    cache = os.path.join(DATA_DIR, "hl_lev_cache.json")
+    try:
+        with open(cache) as f:
+            blob = json.load(f)
+        if time.time() - blob.get("fetched_at", 0) < 7 * 86400:
+            return blob.get("map", {})
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    lev = {}
+    try:
+        dexes = [None] + [d["name"] for d in _hl_post({"type": "perpDexs"}) if d and d.get("name")]
+        for dex in dexes:
+            req = {"type": "meta"} if not dex else {"type": "meta", "dex": dex}
+            for u in _hl_post(req).get("universe", []):
+                lev[u["name"]] = u.get("maxLeverage")
+    except Exception:
+        if not lev:
+            return {}
+    try:
+        with open(cache, "w") as f:
+            json.dump({"fetched_at": time.time(), "map": lev}, f)
+    except OSError:
+        pass
+    return lev
 
 
 def sync_flows(address: str | None = None) -> dict:
@@ -586,7 +648,7 @@ PAGE = """<!doctype html>
 <h2>Order 历史（{{ stats.n_orders }}）</h2>
 <div class="tbl-wrap"><table id="tbl">
 <tr><th class="l">时间 (HKT)</th><th class="l">币种</th><th class="l">方向</th><th>fills</th>
-<th>净成交量</th><th>均价</th><th>金额（名义）</th><th>已实现盈亏</th><th>手续费</th><th class="l">标签</th></tr>
+<th>净成交量</th><th>均价</th><th>金额（名义）</th><th>杠杆</th><th>保证金成本</th><th>已实现盈亏</th><th>手续费</th><th class="l">标签</th></tr>
 {% for o in orders %}
 <tr class="order-row" data-oid="{{ o.oid }}">
   <td class="l">{{ o.time_str }}</td>
@@ -596,6 +658,8 @@ PAGE = """<!doctype html>
   <td>{{ "%.6g"|format(o.filled_sz) }}</td>
   <td>{{ "%.6g"|format(o.avg_px) if o.avg_px else "—" }}</td>
   <td>${{ _money(o.notional_usd) }}</td>
+  <td>{{ "%.0fx"|format(o.est_leverage) if o.est_leverage else "—" }}</td>
+  <td>${{ _money(o.est_margin_used) }}</td>
   <td class="{{ 'pos' if o.closed_pnl >= 0 else 'neg' }}">{{ _money(o.closed_pnl, signed=True) }}</td>
   <td>{{ _money(o.fees) }}</td>
   <td class="l">
@@ -655,10 +719,13 @@ function showDetail(oid){
   document.getElementById('d-title').textContent = `Order ${oid} — ${first.coin||''}`;
   document.getElementById('d-meta').textContent = `${fills.length} 笔成交`;
   let h = '<tr><th class="l">时间 (HKT)</th><th>价格</th><th>数量</th><th class="l">方向</th><th>金额</th><th>已实现盈亏</th><th>手续费</th></tr>';
+  let totAmt = 0;
   for(const f of fills){
     const amt = (f.px*f.sz).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
+    totAmt += f.px*f.sz;
     h += `<tr><td class="l">${f.time_str}</td><td>${f.px.toLocaleString()}</td><td>${f.sz}</td><td class="l">${f.dir}${f.liq?' <span style="color:#f85149">⚡清算</span>':''}</td><td>$${amt}</td><td>${f.pnl>=0?'+':''}${f.pnl.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td>${f.fee.toFixed(4)}</td></tr>`;
   }
+  h += `<tr><td class="l" style="color:#8b949e">合计名义</td><td colspan="3"></td><td style="color:#8b949e">$${totAmt.toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2})}</td><td colspan="2"></td></tr>`;
   document.getElementById('d-fills').innerHTML = h;
   document.getElementById('d-idea').value = first.idea || '';
   document.getElementById('d-review').value = first.review || '';
